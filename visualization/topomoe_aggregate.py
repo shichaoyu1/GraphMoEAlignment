@@ -50,15 +50,28 @@ def save_multiseed_routing(payload, out_dir):
 def save_topology_stability(payload, out_dir):
     path = os.path.join(out_dir, "topomoe_topology_stability.png")
     stability = np.asarray(payload.get("new_edge_stability", []), dtype=np.float32)
-    if stability.size == 0:
+    delta_prior = np.asarray(payload.get("delta_vs_prior_mean", []), dtype=np.float32)
+    delta_initial = np.asarray(payload.get("delta_vs_initial_mean", []), dtype=np.float32)
+    if stability.size == 0 or delta_prior.size == 0 or delta_initial.size == 0:
         return None
-    fig, ax = plt.subplots(figsize=(7.5, 6.5))
+    fig, axes = plt.subplots(1, 3, figsize=(17, 5.5))
     fig.patch.set_facecolor(LIGHT_BG)
-    image = ax.imshow(stability, cmap="viridis", vmin=0, vmax=1)
-    ax.set_xlabel("Target anchor index")
-    ax.set_ylabel("Source anchor index")
-    ax.set_title("New-edge stability across seeds", fontsize=15, weight="bold", color=NEUTRAL)
-    fig.colorbar(image, ax=ax, label="Fraction of seeds opened")
+    stability_image = axes[0].imshow(stability, cmap="viridis", vmin=0, vmax=1)
+    axes[0].set_title("Prior-zero edge stability", fontsize=12, weight="bold", color=NEUTRAL)
+    fig.colorbar(stability_image, ax=axes[0], label="Fraction of seeds opened")
+
+    delta_limit = max(float(np.max(np.abs(delta_prior))), float(np.max(np.abs(delta_initial))), 1e-8)
+    for ax, matrix, title in [
+        (axes[1], delta_prior, "Mean effective - seed prior"),
+        (axes[2], delta_initial, "Mean effective - seed initial"),
+    ]:
+        image = ax.imshow(matrix, cmap="coolwarm", vmin=-delta_limit, vmax=delta_limit)
+        ax.set_title(title, fontsize=12, weight="bold", color=NEUTRAL)
+        fig.colorbar(image, ax=ax, label="Topology weight delta")
+    for ax in axes:
+        ax.set_xlabel("Target anchor index")
+        ax.set_ylabel("Source anchor index")
+    fig.suptitle("Seed-aware topology changes", fontsize=16, weight="bold", color=NEUTRAL)
     return _save(fig, path)
 
 

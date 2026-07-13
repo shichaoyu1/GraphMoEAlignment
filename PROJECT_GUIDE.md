@@ -359,6 +359,18 @@ bash run_server_papers.sh
 
 `run_server_paper2_topomoe_full.sh` 默认运行 seeds `42 43 44`。全部成功后，launcher 自动调用 `glioma.cli.aggregate_topomoe_runs`，在 `<RUN_OUTPUT_ROOT>/aggregate/` 生成多 seed mean±SD、拓扑稳定性和干预汇总图。
 
+已有 hybrid baseline 完成后，可用新的 topology 消融 launcher 原地重建 baseline 聚合结果，并依次运行 `prior_only`、`learned_only` 和关闭 topology refinement 的三 seed 消融：
+
+```bash
+BASELINE_RUN_ROOT=/root/autodl-tmp/glioma/output/server_runs/<HYBRID_RUN_NAME> \
+DATA_ROOT=/root/autodl-tmp/UTSW-Glioma \
+METADATA_TSV=/root/autodl-tmp/UTSW_Glioma_Metadata-2-1.tsv \
+ABLATION_PREFIX=paper2_topology_ablation \
+nohup bash run_server_topology_ablations.sh > topology_ablations.log 2>&1 &
+```
+
+先设置 `DRY_RUN=1` 可只检查命令。launcher 默认使用 50 epoch 和 seeds `42 43 44`，不截断训练或测试病例；现有 hybrid checkpoint 不会被重新训练或修改。
+
 脚本会自动生成：
 
 - `output/server_runs/<RUN_NAME>/...`：每个 paper 和 seed 的实验输出

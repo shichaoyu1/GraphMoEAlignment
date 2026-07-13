@@ -75,15 +75,25 @@ def _aggregate_routing(payloads):
 
 
 def _aggregate_topology(payloads):
-    effective = np.asarray([payload["A_effective"] for payload in payloads], dtype=np.float64)
+    prior = np.asarray([payload["A_prior"] for payload in payloads], dtype=np.float64)
     initial = np.asarray([payload["A_initial"] for payload in payloads], dtype=np.float64)
-    prior = np.asarray(payloads[0]["A_prior"], dtype=np.float64)
-    opened = (prior[None, ...] <= 0) & (effective > initial + 1e-6)
+    effective = np.asarray([payload["A_effective"] for payload in payloads], dtype=np.float64)
+    delta_vs_prior = effective - prior
+    delta_vs_initial = effective - initial
+    opened = (prior <= 0) & (effective > initial + 1e-6)
+    ddof = 1 if len(payloads) > 1 else 0
     return {
         "seed_count": len(payloads),
-        "A_prior": prior.tolist(),
+        "A_prior_mean": prior.mean(axis=0).tolist(),
+        "A_prior_std": prior.std(axis=0, ddof=ddof).tolist(),
+        "A_initial_mean": initial.mean(axis=0).tolist(),
+        "A_initial_std": initial.std(axis=0, ddof=ddof).tolist(),
         "A_effective_mean": effective.mean(axis=0).tolist(),
-        "A_effective_std": effective.std(axis=0).tolist(),
+        "A_effective_std": effective.std(axis=0, ddof=ddof).tolist(),
+        "delta_vs_prior_mean": delta_vs_prior.mean(axis=0).tolist(),
+        "delta_vs_prior_std": delta_vs_prior.std(axis=0, ddof=ddof).tolist(),
+        "delta_vs_initial_mean": delta_vs_initial.mean(axis=0).tolist(),
+        "delta_vs_initial_std": delta_vs_initial.std(axis=0, ddof=ddof).tolist(),
         "new_edge_stability": opened.mean(axis=0).tolist(),
         "diagnostics": _aggregate_numeric_dicts([payload.get("diagnostics", {}) for payload in payloads]),
     }

@@ -12,7 +12,7 @@ class TopoMoEAggregationTests(unittest.TestCase):
         with open(path, "w", encoding="utf-8") as file:
             json.dump(payload, file)
 
-    def _seed_payloads(self, seed_dir, offset):
+    def _seed_payloads(self, seed_dir, offset, prior=None, initial=None, effective=None):
         os.makedirs(seed_dir)
         self._write(
             os.path.join(seed_dir, "anchor_vocab.json"),
@@ -50,9 +50,9 @@ class TopoMoEAggregationTests(unittest.TestCase):
             os.path.join(seed_dir, "topomoe_topology.json"),
             {
                 "topology_mode": "prior_plus_learned",
-                "A_prior": [[1.0, 0.0], [0.0, 1.0]],
-                "A_initial": [[0.99, 0.01], [0.01, 0.99]],
-                "A_effective": [[0.98 - offset, 0.02 + offset], [0.02 + offset, 0.98 - offset]],
+                "A_prior": prior or [[1.0, 0.0], [0.0, 1.0]],
+                "A_initial": initial or [[0.99, 0.01], [0.01, 0.99]],
+                "A_effective": effective or [[0.98 - offset, 0.02 + offset], [0.02 + offset, 0.98 - offset]],
                 "diagnostics": {"new_edge_mass": 0.02 + offset},
             },
         )
@@ -79,6 +79,35 @@ class TopoMoEAggregationTests(unittest.TestCase):
             self.assertEqual(manifest["topology_modes"], ["prior_plus_learned"])
             self.assertTrue(os.path.exists(os.path.join(aggregate_dir, "aggregate_metrics.json")))
             self.assertTrue(os.path.exists(os.path.join(aggregate_dir, "topomoe_topology_stability.png")))
+
+    def test_topology_aggregation_uses_each_seed_prior_and_initial(self):
+        with tempfile.TemporaryDirectory() as root:
+            paper_root = os.path.join(root, "paper2")
+            os.makedirs(paper_root)
+            self._seed_payloads(
+                os.path.join(paper_root, "seed_42"),
+                0.0,
+                prior=[[1.0, 0.0], [0.0, 1.0]],
+                initial=[[0.99, 0.01], [0.01, 0.99]],
+                effective=[[0.97, 0.03], [0.02, 0.98]],
+            )
+            self._seed_payloads(
+                os.path.join(paper_root, "seed_43"),
+                0.02,
+                prior=[[0.8, 0.2], [0.3, 0.7]],
+                initial=[[0.79, 0.21], [0.29, 0.71]],
+                effective=[[0.75, 0.25], [0.27, 0.73]],
+            )
+            aggregate(root)
+            with open(os.path.join(root, "aggregate", "aggregate_topology.json"), encoding="utf-8") as file:
+                topology = json.load(file)
+
+            self.assertNotIn("A_prior", topology)
+            self.assertAlmostEqual(topology["A_prior_mean"][0][1], 0.1)
+            self.assertAlmostEqual(topology["delta_vs_prior_mean"][0][1], 0.04)
+            self.assertAlmostEqual(topology["delta_vs_initial_mean"][0][1], 0.03)
+            self.assertAlmostEqual(topology["new_edge_stability"][0][1], 0.5)
+            self.assertAlmostEqual(topology["delta_vs_prior_std"][0][1], 0.01414213562373095)
 
     def test_checkpoint_metric_selection(self):
         score, metric = _metric_score({"map": 0.7, "mrr": 0.8}, -1.0)
