@@ -35,6 +35,15 @@ def apply_paper_profile(args):
         args.moe_module = "diffusion_moe"
         return args
 
+    if profile == "paper4":
+        # Paper 4: modality-specific encoders plus a geodesic modality graph.
+        args.node_mode = "regions"
+        args.graph_type = "no_graph"
+        args.no_private = True
+        args.no_diffusion = True
+        args.moe_module = "none"
+        return args
+
     raise ValueError(f"Unsupported paper_config: {profile}")
 
 

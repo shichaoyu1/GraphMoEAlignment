@@ -21,6 +21,10 @@ from glioma.visualization.semantic_alignment import (
     save_alignment_space_plot,
     save_semantic_unit_graph,
 )
+from glioma.visualization.geodesic_fusion import (
+    build_geodesic_payloads,
+    save_geodesic_figures,
+)
 from glioma.visualization.topomoe import save_topomoe_figures
 
 
@@ -298,6 +302,10 @@ def collect_alignment_records(
     query_vectors, query_targets, query_records = [], [], []
     routed_scores, route_entries, adjacency_mats = [], [], []
     intervention_scores = {}
+    fusion_adjacencies, fusion_energies, fusion_linear_energies = [], [], []
+    fusion_ratios, fusion_deviations = [], []
+    representative_paths = []
+    fusion_pair_indices = []
     seen_cases = 0
     dropped_nonfinite_queries = 0
 
@@ -316,7 +324,9 @@ def collect_alignment_records(
                 images,
                 region_masks=region_masks,
                 return_extras=True,
-                anchor_prototypes=prototypes_tensor if getattr(model, "use_topo_moe", False) else None,
+                anchor_prototypes=prototypes_tensor
+                if getattr(model, "requires_anchor_prototypes", getattr(model, "use_topo_moe", False))
+                else None,
             )
             shared_tensor = output["extras"]["shared"]
             shared_np = np.nan_to_num(shared_tensor.detach().cpu().numpy())
@@ -329,6 +339,42 @@ def collect_alignment_records(
             adjacency = output["extras"].get("adjacency")
             if adjacency is not None:
                 adjacency_mats.append(np.nan_to_num(adjacency.detach().cpu().numpy()[:remaining]))
+
+            fusion_adjacency = output["extras"].get("fusion_adjacency")
+            if fusion_adjacency is not None:
+                fusion_adjacencies.append(
+                    np.nan_to_num(fusion_adjacency.detach().cpu().numpy()[:remaining])
+                )
+                fusion_energies.append(
+                    np.nan_to_num(
+                        output["extras"]["fusion_geodesic_energy"].detach().cpu().numpy()[:remaining]
+                    )
+                )
+                fusion_linear_energies.append(
+                    np.nan_to_num(
+                        output["extras"]["fusion_linear_energy"].detach().cpu().numpy()[:remaining]
+                    )
+                )
+                fusion_ratios.append(
+                    np.nan_to_num(
+                        output["extras"]["fusion_energy_ratio"].detach().cpu().numpy()[:remaining]
+                    )
+                )
+                fusion_deviations.append(
+                    np.nan_to_num(
+                        output["extras"]["fusion_path_deviation"].detach().cpu().numpy()[:remaining]
+                    )
+                )
+                fusion_pair_indices = output["extras"]["fusion_pair_indices"].detach().cpu().tolist()
+                paths = output["extras"].get("fusion_paths")
+                if paths is not None and len(representative_paths) < 8:
+                    paths_np = np.nan_to_num(paths.detach().cpu().numpy()[:remaining])
+                    for sample_idx, subject_id in enumerate(subject_ids[:remaining]):
+                        if len(representative_paths) >= 8:
+                            break
+                        representative_paths.append(
+                            {"subject_id": str(subject_id), "paths": paths_np[sample_idx].tolist()}
+                        )
 
             batch_targets = build_query_targets(subject_ids, node_names, case_lookup, key_to_id, args)
             batch_interventions = {}
@@ -413,6 +459,25 @@ def collect_alignment_records(
         "topomoe_topology": topomoe_topology_payload(model, anchor_vocab, family_ids, family_names),
         "intervention_scores": {
             name: np.asarray(scores, dtype=np.float32) for name, scores in intervention_scores.items()
+        },
+        "geodesic_fusion": {
+            "pair_indices": fusion_pair_indices,
+            "adjacency": np.concatenate(fusion_adjacencies, axis=0)
+            if fusion_adjacencies
+            else np.empty((0, 3, 4, 4), dtype=np.float32),
+            "geodesic_energy": np.concatenate(fusion_energies, axis=0)
+            if fusion_energies
+            else np.empty((0, 3, 6), dtype=np.float32),
+            "linear_energy": np.concatenate(fusion_linear_energies, axis=0)
+            if fusion_linear_energies
+            else np.empty((0, 3, 6), dtype=np.float32),
+            "energy_ratio": np.concatenate(fusion_ratios, axis=0)
+            if fusion_ratios
+            else np.empty((0, 3, 6), dtype=np.float32),
+            "path_deviation": np.concatenate(fusion_deviations, axis=0)
+            if fusion_deviations
+            else np.empty((0, 3, 6), dtype=np.float32),
+            "representative_paths": representative_paths,
         },
     }
     records["routing_records"] = build_compact_routing_records(records, anchor_vocab, family_ids, family_names)
@@ -543,6 +608,12 @@ def _uses_topomoe_artifact_protocol(model, args):
     )
 
 
+def _uses_geodesic_artifact_protocol(model, args):
+    return bool(getattr(model, "use_geodesic_fusion", False)) and getattr(
+        args, "paper_config", "none"
+    ) == "paper4"
+
+
 def evaluate_and_save(
     model,
     bank,
@@ -560,6 +631,7 @@ def evaluate_and_save(
 ):
     is_v2 = getattr(model, "topomoe_version", "v1") == "v2"
     use_topomoe_artifacts = _uses_topomoe_artifact_protocol(model, args)
+    use_geodesic_artifacts = _uses_geodesic_artifact_protocol(model, args)
     records = collect_alignment_records(
         model,
         bank,
@@ -610,6 +682,23 @@ def evaluate_and_save(
             context=context,
         )
         save_topomoe_figure_manifest(manifest, out_dir)
+    elif use_geodesic_artifacts:
+        context = figure_context or {}
+        diagnostics, graph = build_geodesic_payloads(records, context)
+        save_json(os.path.join(out_dir, "geodesic_diagnostics.json"), diagnostics)
+        save_json(os.path.join(out_dir, "fusion_graph.json"), graph)
+        figures = save_geodesic_figures(records, graph, out_dir, context)
+        manifest = {
+            "status": "single_seed",
+            "seed": context.get("seed"),
+            "checkpoint_type": checkpoint_type,
+            "fusion_mode": context.get("fusion_mode"),
+            "metric_support": context.get("metric_support"),
+            "fusion_graph": context.get("fusion_graph"),
+            "case_count": records.get("case_count"),
+            "figures": figures,
+        }
+        save_json(os.path.join(out_dir, "fusion_figure_manifest.json"), manifest)
     else:
         save_json(os.path.join(out_dir, "semantic_alignment_metrics.json"), metrics)
         save_alignment_space_plot(records, anchor_vocab, out_dir)
@@ -623,4 +712,5 @@ __all__ = [
     "intervention_metrics",
     "metrics_from_records",
     "retrieval_metrics_from_scores",
+    "_uses_geodesic_artifact_protocol",
 ]

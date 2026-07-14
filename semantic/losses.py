@@ -81,6 +81,34 @@ def topomoe_family_balanced_losses(
     within_anchor = torch.stack(within_anchor_losses).mean() if within_anchor_losses else zero
     return family_route, within_anchor
 
+
+def geodesic_path_semantic_loss(interior_paths, pair_valid, target_ids, prototypes, temperature=0.07):
+    """Align every valid interior path point with its region-level targets."""
+    if interior_paths is None or interior_paths.numel() == 0:
+        return prototypes.sum() * 0
+    batch, regions, pairs, steps, dim = interior_paths.shape
+    if len(target_ids) != batch * regions:
+        raise ValueError(f"Expected {batch * regions} target rows, got {len(target_ids)}")
+    queries = []
+    path_targets = []
+    for batch_idx in range(batch):
+        for region_idx in range(regions):
+            targets = target_ids[batch_idx * regions + region_idx]
+            for pair_idx in range(pairs):
+                if not bool(pair_valid[batch_idx, pair_idx]):
+                    continue
+                queries.append(interior_paths[batch_idx, region_idx, pair_idx])
+                path_targets.extend([targets] * steps)
+    if not queries:
+        return interior_paths.sum() * 0
+    query_tensor = torch.cat(queries, dim=0).reshape(-1, dim)
+    return multi_positive_contrastive_loss(
+        query_tensor,
+        path_targets,
+        prototypes,
+        temperature=temperature,
+    )
+
 __all__ = [
     "SemanticPrototypeBank",
     "multi_positive_contrastive_loss",
@@ -89,4 +117,5 @@ __all__ = [
     "dcca_alignment_loss",
     "anchor_center_loss",
     "topomoe_family_balanced_losses",
+    "geodesic_path_semantic_loss",
 ]

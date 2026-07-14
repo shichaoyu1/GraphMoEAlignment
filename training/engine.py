@@ -9,6 +9,7 @@ from glioma.data.loaders import build_query_targets
 from glioma.semantic.losses import (
     anchor_center_loss,
     dcca_alignment_loss,
+    geodesic_path_semantic_loss,
     masked_multi_positive_nll,
     medclip_multi_positive_loss,
     multi_positive_contrastive_loss,
@@ -34,6 +35,12 @@ def sanitize_tensor(tensor, nan=0.0, posinf=0.0, neginf=0.0):
 
 
 def graph_cons_scale(epoch, warmup_epochs):
+    if warmup_epochs <= 0:
+        return 1.0
+    return min(1.0, float(epoch) / float(warmup_epochs))
+
+
+def geodesic_loss_scale(epoch, warmup_epochs):
     if warmup_epochs <= 0:
         return 1.0
     return min(1.0, float(epoch) / float(warmup_epochs))
@@ -89,6 +96,8 @@ def run_epoch(model, bank, loader, optimizer, device, args, case_lookup, key_to_
     freeze_graph = training and (epoch <= args.graph_warmup_epochs)
     is_topomoe = bool(getattr(model, "use_topo_moe", False))
     is_topomoe_v2 = is_topomoe and getattr(model, "topomoe_version", "v1") == "v2"
+    is_geodesic = bool(getattr(model, "use_geodesic_fusion", False))
+    geo_scale = geodesic_loss_scale(epoch, args.geo_warmup_epochs) if is_geodesic else 0.0
 
     for batch in loader:
         images = batch["images"].to(device)
@@ -104,7 +113,9 @@ def run_epoch(model, bank, loader, optimizer, device, args, case_lookup, key_to_
                 region_masks=region_masks,
                 return_extras=True,
                 freeze_graph=freeze_graph,
-                anchor_prototypes=prototypes if is_topomoe else None,
+                anchor_prototypes=prototypes
+                if getattr(model, "requires_anchor_prototypes", is_topomoe)
+                else None,
             )
             shared = sanitize_tensor(output["extras"]["shared"])
             queries = shared.reshape(-1, shared.shape[-1])
@@ -143,6 +154,16 @@ def run_epoch(model, bank, loader, optimizer, device, args, case_lookup, key_to_
                     target_ids,
                 )
 
+            path_semantic_loss = zero
+            if is_geodesic and output["extras"].get("fusion_interior_paths") is not None:
+                path_semantic_loss = geodesic_path_semantic_loss(
+                    output["extras"]["fusion_interior_paths"],
+                    output["extras"]["fusion_pair_valid"],
+                    target_ids,
+                    prototypes,
+                    temperature=args.temperature,
+                )
+
             total = (
                 alignment_loss
                 + args.lambda_anchor * anchor_loss
@@ -173,6 +194,12 @@ def run_epoch(model, bank, loader, optimizer, device, args, case_lookup, key_to_
                     + args.lambda_route_balance * _loss_or_zero(losses, "route_balance", zero)
                     + args.lambda_route_sparse * _loss_or_zero(losses, "route_sparse", zero)
                 )
+            if is_geodesic:
+                total = (
+                    total
+                    + args.lambda_geo_energy * geo_scale * _loss_or_zero(losses, "geo_energy", zero)
+                    + args.lambda_path_semantic * geo_scale * path_semantic_loss
+                )
 
             if not torch.isfinite(total):
                 totals["nonfinite_batches"] += 1
@@ -181,12 +208,20 @@ def run_epoch(model, bank, loader, optimizer, device, args, case_lookup, key_to_
                 continue
 
             topo_grad_norm = 0.0
+            geopath_grad_norm = 0.0
             if training:
                 optimizer.zero_grad()
                 total.backward()
                 topo_module = getattr(model, "topo_moe", None)
                 if topo_module is not None and topo_module.A_raw.grad is not None:
                     topo_grad_norm = float(topo_module.A_raw.grad.detach().norm().cpu())
+                fusion_module = getattr(model, "fusion", None)
+                if fusion_module is not None:
+                    squared_norm = zero.detach()
+                    for parameter in fusion_module.geopath_net.parameters():
+                        if parameter.grad is not None:
+                            squared_norm = squared_norm + parameter.grad.detach().square().sum()
+                    geopath_grad_norm = float(squared_norm.sqrt().cpu())
                 torch.nn.utils.clip_grad_norm_(list(model.parameters()) + list(bank.parameters()), args.grad_clip)
                 optimizer.step()
 
@@ -199,6 +234,8 @@ def run_epoch(model, bank, loader, optimizer, device, args, case_lookup, key_to_
             "legacy_route": legacy_route_loss,
             "family_route": family_route_loss,
             "within_anchor": within_anchor_loss,
+            "geo_energy": _loss_or_zero(losses, "geo_energy", zero),
+            "path_semantic": path_semantic_loss,
             "cons": _loss_or_zero(losses, "cons", zero),
             "decouple": _loss_or_zero(losses, "decouple", zero),
             "leak": _loss_or_zero(losses, "leak", zero),
@@ -228,6 +265,11 @@ def run_epoch(model, bank, loader, optimizer, device, args, case_lookup, key_to_
         for name, value in diagnostics.items():
             totals[f"topology:{name}"] += float(value.detach().cpu()) * batch_size
         totals["topology:gradient_norm"] += topo_grad_norm * batch_size
+        fusion_diagnostics = output["extras"].get("fusion_diagnostics") or {}
+        for name, value in fusion_diagnostics.items():
+            totals[f"fusion:{name}"] += float(value.detach().cpu()) * batch_size
+        totals["fusion:geopath_gradient_norm"] += geopath_grad_norm * batch_size
+        totals["fusion:loss_scale"] += geo_scale * batch_size
         totals["representation:shared_norm"] += float(output["extras"]["shared_norm"].cpu()) * batch_size
         totals["representation:private_norm"] += float(output["extras"]["private_norm"].cpu()) * batch_size
         totals["representation:diffusion_residual_norm"] += float(
@@ -250,8 +292,15 @@ def run_epoch(model, bank, loader, optimizer, device, args, case_lookup, key_to_
         "losses": loss_values,
         "routing": group("routing"),
         "topology": group("topology"),
+        "fusion": group("fusion"),
         "representation": group("representation"),
     }
 
 
-__all__ = ["set_seed", "sanitize_tensor", "graph_cons_scale", "run_epoch"]
+__all__ = [
+    "set_seed",
+    "sanitize_tensor",
+    "graph_cons_scale",
+    "geodesic_loss_scale",
+    "run_epoch",
+]

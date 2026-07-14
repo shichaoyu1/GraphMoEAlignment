@@ -20,7 +20,9 @@ def build_parser():
         default="full",
         choices=["full", "clip", "medclip_style", "dcca", "graph_shared_only", "hgt", "no_anchor", "graph_only", "modality_vector", "no_private", "no_graph"],
     )
-    parser.add_argument("--paper_config", default="none", choices=["none", "paper1", "paper2", "paper3"])
+    parser.add_argument(
+        "--paper_config", default="none", choices=["none", "paper1", "paper2", "paper3", "paper4"]
+    )
     parser.add_argument("--out_dir", default=DEFAULT_OUT_DIR)
     parser.add_argument("--validation_output_root", default=DEFAULT_VALIDATION_OUTPUT_ROOT)
 
@@ -60,6 +62,19 @@ def build_parser():
     parser.add_argument("--no_private", action="store_true")
     parser.add_argument("--no_diffusion", action="store_true")
 
+    parser.add_argument("--fusion_mode", default="geodesic", choices=["concat", "euclidean", "geodesic"])
+    parser.add_argument(
+        "--geo_metric_support", default="case_and_anchors", choices=["case_and_anchors", "case_only"]
+    )
+    parser.add_argument("--disable_fusion_graph", action="store_true")
+    parser.add_argument("--geo_path_steps", type=int, default=5)
+    parser.add_argument("--geo_gamma", type=float, default=0.5)
+    parser.add_argument("--geo_rho", type=float, default=1e-3)
+    parser.add_argument("--geo_metric_alpha", type=float, default=1.0)
+    parser.add_argument("--geo_graph_temperature", type=float, default=1.0)
+    parser.add_argument("--geo_bend_init", type=float, default=0.1)
+    parser.add_argument("--geo_warmup_epochs", type=int, default=5)
+
     parser.add_argument("--target_policy", default="region_rules", choices=["region_rules", "all_patient_anchors"])
     parser.add_argument("--exclude_pathology_anchors", action="store_true")
     parser.add_argument("--exclude_molecular_anchors", action="store_true")
@@ -93,6 +108,8 @@ def build_parser():
     parser.add_argument("--lambda_topo_delta", type=float, default=0.001)
     parser.add_argument("--lambda_specialize", type=float, default=0.1)
     parser.add_argument("--lambda_anchor_family_balance", type=float, default=0.05)
+    parser.add_argument("--lambda_geo_energy", type=float, default=0.1)
+    parser.add_argument("--lambda_path_semantic", type=float, default=0.1)
     parser.add_argument("--grad_clip", type=float, default=1.0)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--skip_interventions", action="store_true")
@@ -143,6 +160,7 @@ def main(args=None):
     from glioma.eval.semantic_alignment_eval import collect_alignment_records, evaluate_and_save, metrics_from_records
     from glioma.io.artifacts import save_json
     from glioma.models.glioma_graph_diffusion_net import GliomaGraphDiffusionNet
+    from glioma.models.glioma_geodesic_fusion_net import GliomaGeodesicFusionNet
     from glioma.models.glioma_topomoe_net import GliomaTopoMoENet
     from glioma.objectives import SemanticPrototypeBank
     from glioma.semantic.topology import anchor_family_ids, build_cooccurrence_prior
@@ -191,8 +209,24 @@ def main(args=None):
         "residual_index": len(family_names) - 1,
     }
 
+    is_paper4 = args.paper_config == "paper4"
     is_v2 = args.moe_module == "topo_moe" and args.topomoe_version == "v2"
-    if is_v2:
+    if is_paper4:
+        model = GliomaGeodesicFusionNet(
+            z_slices=args.z_slices,
+            feat_dim=args.feat_dim,
+            shared_dim=args.shared_dim,
+            fusion_mode=args.fusion_mode,
+            geo_metric_support=args.geo_metric_support,
+            geo_path_steps=args.geo_path_steps,
+            geo_gamma=args.geo_gamma,
+            geo_rho=args.geo_rho,
+            geo_metric_alpha=args.geo_metric_alpha,
+            geo_graph_temperature=args.geo_graph_temperature,
+            geo_bend_init=args.geo_bend_init,
+            use_fusion_graph=not args.disable_fusion_graph,
+        ).to(device)
+    elif is_v2:
         model = GliomaTopoMoENet(
             z_slices=args.z_slices,
             node_mode=args.node_mode,
@@ -264,6 +298,15 @@ def main(args=None):
         }
         best = {"direct": -float("inf"), "routed": -float("inf")}
         checkpoint_manifest = {"primary": "routed", "direct": {}, "routed": {}}
+    elif is_paper4:
+        checkpoint_paths = {"direct": os.path.join(args.out_dir, "best_paper4_alignment.pt")}
+        best = {"direct": -float("inf")}
+        checkpoint_manifest = {
+            "primary": "direct",
+            "method": "paper4_geodesic_fusion",
+            "fusion_mode": args.fusion_mode,
+            "direct": {},
+        }
     else:
         checkpoint_paths = {"direct": os.path.join(args.out_dir, "best_semantic_alignment.pt")}
         best = {"direct": -float("inf")}
@@ -341,6 +384,15 @@ def main(args=None):
                 "topology_mode": args.topo_mode,
                 "history_path": os.path.join(args.out_dir, "history.json"),
             }
+        if is_paper4:
+            figure_context = {
+                "seed": args.seed,
+                "checkpoint_type": "paper4_direct_best",
+                "fusion_mode": args.fusion_mode,
+                "metric_support": args.geo_metric_support,
+                "fusion_graph": not args.disable_fusion_graph,
+                "history_path": os.path.join(args.out_dir, "history.json"),
+            }
         metrics = evaluate_and_save(
             model,
             bank,
@@ -351,7 +403,13 @@ def main(args=None):
             key_to_id,
             anchor_vocab,
             args.out_dir,
-            checkpoint_type="direct_best_v1" if figure_context else "direct_best",
+            checkpoint_type=(
+                "paper4_direct_best"
+                if is_paper4
+                else "direct_best_v1"
+                if figure_context
+                else "direct_best"
+            ),
             run_interventions=False,
             figure_context=figure_context,
         )
