@@ -70,4 +70,23 @@ def build_cooccurrence_prior(train_cases, anchor_vocab, key_to_id):
     return prior
 
 
-__all__ = ["anchor_family_ids", "build_cooccurrence_prior", "RESIDUAL_FAMILY"]
+def aggregate_family_prior(anchor_prior, family_ids, family_names):
+    """Aggregate an anchor transition prior into family-level topology."""
+    num_families = len(family_names)
+    membership = torch.zeros(num_families, len(family_ids), dtype=anchor_prior.dtype)
+    for anchor, family in enumerate(family_ids):
+        membership[int(family), anchor] = 1.0
+    membership = membership / membership.sum(dim=1, keepdim=True).clamp(min=1.0)
+    prior = membership @ anchor_prior @ membership.t()
+    residual = num_families - 1
+    prior[residual] = 1.0
+    prior[:, residual] = torch.maximum(prior[:, residual], torch.full_like(prior[:, residual], 1e-2))
+    return prior / prior.sum(dim=-1, keepdim=True).clamp(min=1e-8)
+
+
+__all__ = [
+    "anchor_family_ids",
+    "build_cooccurrence_prior",
+    "aggregate_family_prior",
+    "RESIDUAL_FAMILY",
+]

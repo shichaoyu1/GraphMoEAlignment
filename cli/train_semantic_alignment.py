@@ -74,6 +74,18 @@ def build_parser():
     parser.add_argument("--geo_graph_temperature", type=float, default=1.0)
     parser.add_argument("--geo_bend_init", type=float, default=0.1)
     parser.add_argument("--geo_warmup_epochs", type=int, default=5)
+    parser.add_argument(
+        "--paper4_fusion_backend",
+        default="vector_geodesic",
+        choices=["vector_geodesic", "spd_hierarchical"],
+    )
+    parser.add_argument("--spd_dim", type=int, default=16)
+    parser.add_argument("--spd_geometry", default="spd", choices=["spd", "euclidean"])
+    parser.add_argument("--spd_eigenvalue_min", type=float, default=1e-4)
+    parser.add_argument("--spd_local_temperature", type=float, default=1.0)
+    parser.add_argument("--spd_upper_temperature", type=float, default=1.0)
+    parser.add_argument("--disable_spd_upper_graph", action="store_true")
+    parser.add_argument("--disable_spd_anchor_families", action="store_true")
 
     parser.add_argument("--target_policy", default="region_rules", choices=["region_rules", "all_patient_anchors"])
     parser.add_argument("--exclude_pathology_anchors", action="store_true")
@@ -110,6 +122,8 @@ def build_parser():
     parser.add_argument("--lambda_anchor_family_balance", type=float, default=0.05)
     parser.add_argument("--lambda_geo_energy", type=float, default=0.1)
     parser.add_argument("--lambda_path_semantic", type=float, default=0.1)
+    parser.add_argument("--lambda_spd_condition", type=float, default=1e-3)
+    parser.add_argument("--lambda_manifold_topology", type=float, default=0.05)
     parser.add_argument("--grad_clip", type=float, default=1.0)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--skip_interventions", action="store_true")
@@ -163,7 +177,11 @@ def main(args=None):
     from glioma.models.glioma_geodesic_fusion_net import GliomaGeodesicFusionNet
     from glioma.models.glioma_topomoe_net import GliomaTopoMoENet
     from glioma.objectives import SemanticPrototypeBank
-    from glioma.semantic.topology import anchor_family_ids, build_cooccurrence_prior
+    from glioma.semantic.topology import (
+        aggregate_family_prior,
+        anchor_family_ids,
+        build_cooccurrence_prior,
+    )
     from glioma.semantic.vocab import build_anchor_vocab, build_medclip_ignore_ids
     from glioma.training.engine import run_epoch, set_seed
 
@@ -199,7 +217,19 @@ def main(args=None):
         raise ValueError("Need at least two train-set semantic anchors")
 
     family_ids, family_names = anchor_family_ids(anchor_vocab)
-    topo_prior = build_cooccurrence_prior(splits["train"], anchor_vocab, key_to_id) if args.moe_module == "topo_moe" else None
+    needs_topology = args.moe_module == "topo_moe" or (
+        args.paper_config == "paper4" and args.paper4_fusion_backend == "spd_hierarchical"
+    )
+    topo_prior = (
+        build_cooccurrence_prior(splits["train"], anchor_vocab, key_to_id)
+        if needs_topology
+        else None
+    )
+    family_prior = (
+        aggregate_family_prior(topo_prior, family_ids, family_names)
+        if topo_prior is not None
+        else None
+    )
     case_lookup = {case["subject_id"]: case for case in cases}
     loaders = {name: make_loader(split_cases, args, name) for name, split_cases in splits.items()}
     loss_context = {
@@ -225,6 +255,17 @@ def main(args=None):
             geo_graph_temperature=args.geo_graph_temperature,
             geo_bend_init=args.geo_bend_init,
             use_fusion_graph=not args.disable_fusion_graph,
+            paper4_fusion_backend=args.paper4_fusion_backend,
+            spd_dim=args.spd_dim,
+            spd_geometry=args.spd_geometry,
+            spd_eigenvalue_min=args.spd_eigenvalue_min,
+            spd_local_temperature=args.spd_local_temperature,
+            spd_upper_temperature=args.spd_upper_temperature,
+            use_spd_upper_graph=not args.disable_spd_upper_graph,
+            use_spd_anchor_families=not args.disable_spd_anchor_families,
+            anchor_family_ids=family_ids,
+            anchor_family_names=family_names,
+            family_prior=family_prior,
         ).to(device)
     elif is_v2:
         model = GliomaTopoMoENet(
@@ -303,7 +344,12 @@ def main(args=None):
         best = {"direct": -float("inf")}
         checkpoint_manifest = {
             "primary": "direct",
-            "method": "paper4_geodesic_fusion",
+            "method": (
+                "paper4_hierarchical_spd_fusion"
+                if args.paper4_fusion_backend == "spd_hierarchical"
+                else "paper4_geodesic_fusion"
+            ),
+            "fusion_backend": args.paper4_fusion_backend,
             "fusion_mode": args.fusion_mode,
             "direct": {},
         }
@@ -389,8 +435,12 @@ def main(args=None):
                 "seed": args.seed,
                 "checkpoint_type": "paper4_direct_best",
                 "fusion_mode": args.fusion_mode,
+                "fusion_backend": args.paper4_fusion_backend,
+                "spd_geometry": args.spd_geometry,
                 "metric_support": args.geo_metric_support,
                 "fusion_graph": not args.disable_fusion_graph,
+                "spd_upper_graph": not args.disable_spd_upper_graph,
+                "spd_anchor_families": not args.disable_spd_anchor_families,
                 "history_path": os.path.join(args.out_dir, "history.json"),
             }
         metrics = evaluate_and_save(

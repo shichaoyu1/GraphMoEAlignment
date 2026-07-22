@@ -70,6 +70,12 @@ GEO_METRIC_ALPHA="${GEO_METRIC_ALPHA:-1.0}"
 GEO_GRAPH_TEMPERATURE="${GEO_GRAPH_TEMPERATURE:-1.0}"
 GEO_BEND_INIT="${GEO_BEND_INIT:-0.1}"
 GEO_WARMUP_EPOCHS="${GEO_WARMUP_EPOCHS:-5}"
+PAPER4_FUSION_BACKEND="${PAPER4_FUSION_BACKEND:-vector_geodesic}"
+SPD_DIM="${SPD_DIM:-16}"
+SPD_GEOMETRY="${SPD_GEOMETRY:-spd}"
+SPD_EIGENVALUE_MIN="${SPD_EIGENVALUE_MIN:-1e-4}"
+SPD_LOCAL_TEMPERATURE="${SPD_LOCAL_TEMPERATURE:-1.0}"
+SPD_UPPER_TEMPERATURE="${SPD_UPPER_TEMPERATURE:-1.0}"
 GRAPH_TOP_K="${GRAPH_TOP_K:-3}"
 ALIGN_MAX_CASES="${ALIGN_MAX_CASES:-}"
 NUM_WORKERS="${NUM_WORKERS:-0}"
@@ -88,6 +94,8 @@ LAMBDA_TOPO_DELTA="${LAMBDA_TOPO_DELTA:-0.001}"
 LAMBDA_ANCHOR_FAMILY_BALANCE="${LAMBDA_ANCHOR_FAMILY_BALANCE:-0.05}"
 LAMBDA_GEO_ENERGY="${LAMBDA_GEO_ENERGY:-0.1}"
 LAMBDA_PATH_SEMANTIC="${LAMBDA_PATH_SEMANTIC:-0.1}"
+LAMBDA_SPD_CONDITION="${LAMBDA_SPD_CONDITION:-0.001}"
+LAMBDA_MANIFOLD_TOPOLOGY="${LAMBDA_MANIFOLD_TOPOLOGY:-0.05}"
 
 AUGMENT="${AUGMENT:-1}"
 CACHE="${CACHE:-0}"
@@ -101,6 +109,8 @@ NO_DIFFUSION="${NO_DIFFUSION:-0}"
 DISABLE_TOPOLOGY_REFINEMENT="${DISABLE_TOPOLOGY_REFINEMENT:-0}"
 DISABLE_FAMILY_BALANCED_ROUTE="${DISABLE_FAMILY_BALANCED_ROUTE:-0}"
 DISABLE_FUSION_GRAPH="${DISABLE_FUSION_GRAPH:-0}"
+DISABLE_SPD_UPPER_GRAPH="${DISABLE_SPD_UPPER_GRAPH:-0}"
+DISABLE_SPD_ANCHOR_FAMILIES="${DISABLE_SPD_ANCHOR_FAMILIES:-0}"
 SKIP_INTERVENTIONS="${SKIP_INTERVENTIONS:-0}"
 
 # Paper 2 tuning defaults based on the first full TopoMoE run. Environment
@@ -344,6 +354,12 @@ for paper in $PAPER_CONFIGS; do
   geo_graph_temperature="$(paper_cfg "$paper" GEO_GRAPH_TEMPERATURE "$GEO_GRAPH_TEMPERATURE")"
   geo_bend_init="$(paper_cfg "$paper" GEO_BEND_INIT "$GEO_BEND_INIT")"
   geo_warmup_epochs="$(paper_cfg "$paper" GEO_WARMUP_EPOCHS "$GEO_WARMUP_EPOCHS")"
+  paper4_fusion_backend="$(paper_cfg "$paper" FUSION_BACKEND "$PAPER4_FUSION_BACKEND")"
+  spd_dim="$(paper_cfg "$paper" SPD_DIM "$SPD_DIM")"
+  spd_geometry="$(paper_cfg "$paper" SPD_GEOMETRY "$SPD_GEOMETRY")"
+  spd_eigenvalue_min="$(paper_cfg "$paper" SPD_EIGENVALUE_MIN "$SPD_EIGENVALUE_MIN")"
+  spd_local_temperature="$(paper_cfg "$paper" SPD_LOCAL_TEMPERATURE "$SPD_LOCAL_TEMPERATURE")"
+  spd_upper_temperature="$(paper_cfg "$paper" SPD_UPPER_TEMPERATURE "$SPD_UPPER_TEMPERATURE")"
   graph_top_k="$(paper_cfg "$paper" GRAPH_TOP_K "$GRAPH_TOP_K")"
   align_max_cases="$(paper_cfg "$paper" ALIGN_MAX_CASES "$ALIGN_MAX_CASES")"
   num_workers="$(paper_cfg "$paper" NUM_WORKERS "$NUM_WORKERS")"
@@ -361,6 +377,8 @@ for paper in $PAPER_CONFIGS; do
   lambda_anchor_family_balance="$(paper_cfg "$paper" LAMBDA_ANCHOR_FAMILY_BALANCE "$LAMBDA_ANCHOR_FAMILY_BALANCE")"
   lambda_geo_energy="$(paper_cfg "$paper" LAMBDA_GEO_ENERGY "$LAMBDA_GEO_ENERGY")"
   lambda_path_semantic="$(paper_cfg "$paper" LAMBDA_PATH_SEMANTIC "$LAMBDA_PATH_SEMANTIC")"
+  lambda_spd_condition="$(paper_cfg "$paper" LAMBDA_SPD_CONDITION "$LAMBDA_SPD_CONDITION")"
+  lambda_manifold_topology="$(paper_cfg "$paper" LAMBDA_MANIFOLD_TOPOLOGY "$LAMBDA_MANIFOLD_TOPOLOGY")"
 
   augment="$(paper_cfg "$paper" AUGMENT "$AUGMENT")"
   cache="$(paper_cfg "$paper" CACHE "$CACHE")"
@@ -374,6 +392,8 @@ for paper in $PAPER_CONFIGS; do
   disable_topology_refinement="$(paper_cfg "$paper" DISABLE_TOPOLOGY_REFINEMENT "$DISABLE_TOPOLOGY_REFINEMENT")"
   disable_family_balanced_route="$(paper_cfg "$paper" DISABLE_FAMILY_BALANCED_ROUTE "$DISABLE_FAMILY_BALANCED_ROUTE")"
   disable_fusion_graph="$(paper_cfg "$paper" DISABLE_FUSION_GRAPH "$DISABLE_FUSION_GRAPH")"
+  disable_spd_upper_graph="$(paper_cfg "$paper" DISABLE_SPD_UPPER_GRAPH "$DISABLE_SPD_UPPER_GRAPH")"
+  disable_spd_anchor_families="$(paper_cfg "$paper" DISABLE_SPD_ANCHOR_FAMILIES "$DISABLE_SPD_ANCHOR_FAMILIES")"
   skip_interventions="$(paper_cfg "$paper" SKIP_INTERVENTIONS "$SKIP_INTERVENTIONS")"
   paper_extra_args="$(paper_cfg "$paper" EXTRA_ARGS "")"
 
@@ -418,6 +438,12 @@ for paper in $PAPER_CONFIGS; do
       --geo_graph_temperature "$geo_graph_temperature"
       --geo_bend_init "$geo_bend_init"
       --geo_warmup_epochs "$geo_warmup_epochs"
+      --paper4_fusion_backend "$paper4_fusion_backend"
+      --spd_dim "$spd_dim"
+      --spd_geometry "$spd_geometry"
+      --spd_eigenvalue_min "$spd_eigenvalue_min"
+      --spd_local_temperature "$spd_local_temperature"
+      --spd_upper_temperature "$spd_upper_temperature"
       --graph_top_k "$graph_top_k"
       --num_workers "$num_workers"
       --epochs "$epochs"
@@ -437,6 +463,8 @@ for paper in $PAPER_CONFIGS; do
       --lambda_anchor_family_balance "$lambda_anchor_family_balance"
       --lambda_geo_energy "$lambda_geo_energy"
       --lambda_path_semantic "$lambda_path_semantic"
+      --lambda_spd_condition "$lambda_spd_condition"
+      --lambda_manifold_topology "$lambda_manifold_topology"
       --grad_clip "$grad_clip"
       --seed "$seed"
     )
@@ -463,6 +491,8 @@ for paper in $PAPER_CONFIGS; do
     append_flag_if_true "$disable_topology_refinement" --disable_topology_refinement cmd
     append_flag_if_true "$disable_family_balanced_route" --disable_family_balanced_route cmd
     append_flag_if_true "$disable_fusion_graph" --disable_fusion_graph cmd
+    append_flag_if_true "$disable_spd_upper_graph" --disable_spd_upper_graph cmd
+    append_flag_if_true "$disable_spd_anchor_families" --disable_spd_anchor_families cmd
     append_flag_if_true "$skip_interventions" --skip_interventions cmd
     append_words "$COMMON_EXTRA_ARGS" cmd
     append_words "$paper_extra_args" cmd

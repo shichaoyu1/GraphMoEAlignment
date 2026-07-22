@@ -9,6 +9,7 @@ import torch
 from glioma.data.loaders import build_query_targets
 from glioma.io.artifacts import (
     save_json,
+    save_manifold_artifacts,
     save_patient_level_records,
     save_routing_records,
     save_topomoe_figure_manifest,
@@ -26,6 +27,7 @@ from glioma.visualization.geodesic_fusion import (
     save_geodesic_figures,
 )
 from glioma.visualization.topomoe import save_topomoe_figures
+from glioma.visualization.manifold_fusion import save_manifold_figures
 
 
 def retrieval_metrics_from_scores(scores, target_ids, gallery_ids=None, ks=(1, 5, 10), subject_ids=None):
@@ -306,6 +308,12 @@ def collect_alignment_records(
     fusion_ratios, fusion_deviations = [], []
     representative_paths = []
     fusion_pair_indices = []
+    manifold_local_adjacencies, manifold_upper_adjacencies = [], []
+    manifold_local_distances, manifold_upper_distances = [], []
+    manifold_raw_scales, manifold_raw_traces = [], []
+    manifold_eigenvalues, manifold_conditions = [], []
+    manifold_upper_node_names = []
+    manifold_subject_ids = []
     seen_cases = 0
     dropped_nonfinite_queries = 0
 
@@ -375,6 +383,26 @@ def collect_alignment_records(
                         representative_paths.append(
                             {"subject_id": str(subject_id), "paths": paths_np[sample_idx].tolist()}
                         )
+
+            manifold_local = output["extras"].get("manifold_local_adjacency")
+            if manifold_local is not None:
+                manifold_subject_ids.extend(str(value) for value in subject_ids[:remaining])
+                def append_manifold(name, target):
+                    value = output["extras"].get(name)
+                    if value is not None:
+                        target.append(np.nan_to_num(value.detach().cpu().numpy()[:remaining]))
+
+                append_manifold("manifold_local_adjacency", manifold_local_adjacencies)
+                append_manifold("manifold_upper_adjacency", manifold_upper_adjacencies)
+                append_manifold("manifold_local_distances", manifold_local_distances)
+                append_manifold("manifold_upper_distances", manifold_upper_distances)
+                append_manifold("manifold_raw_scales", manifold_raw_scales)
+                append_manifold("manifold_raw_spd_traces", manifold_raw_traces)
+                append_manifold("manifold_spd_eigenvalues", manifold_eigenvalues)
+                append_manifold("manifold_condition_numbers", manifold_conditions)
+                manifold_upper_node_names = list(
+                    output["extras"].get("manifold_upper_node_names", manifold_upper_node_names)
+                )
 
             batch_targets = build_query_targets(subject_ids, node_names, case_lookup, key_to_id, args)
             batch_interventions = {}
@@ -478,6 +506,39 @@ def collect_alignment_records(
             if fusion_deviations
             else np.empty((0, 3, 6), dtype=np.float32),
             "representative_paths": representative_paths,
+        },
+        "manifold_fusion": {
+            "local_adjacency": np.concatenate(manifold_local_adjacencies, axis=0)
+            if manifold_local_adjacencies
+            else np.empty((0, 3, 4, 4), dtype=np.float32),
+            "upper_adjacency": np.concatenate(manifold_upper_adjacencies, axis=0)
+            if manifold_upper_adjacencies
+            else np.empty((0, 0, 0), dtype=np.float32),
+            "local_distances": np.concatenate(manifold_local_distances, axis=0)
+            if manifold_local_distances
+            else np.empty((0, 3, 4, 4), dtype=np.float32),
+            "upper_distances": np.concatenate(manifold_upper_distances, axis=0)
+            if manifold_upper_distances
+            else np.empty((0, 0, 0), dtype=np.float32),
+            "raw_scales": np.concatenate(manifold_raw_scales, axis=0)
+            if manifold_raw_scales
+            else np.empty((0, 3, 4), dtype=np.float32),
+            "raw_spd_traces": np.concatenate(manifold_raw_traces, axis=0)
+            if manifold_raw_traces
+            else np.empty((0, 3, 4), dtype=np.float32),
+            "spd_eigenvalues": np.concatenate(manifold_eigenvalues, axis=0)
+            if manifold_eigenvalues
+            else np.empty((0, 3, 4, 0), dtype=np.float32),
+            "condition_numbers": np.concatenate(manifold_conditions, axis=0)
+            if manifold_conditions
+            else np.empty((0, 3, 4), dtype=np.float32),
+            "upper_node_names": manifold_upper_node_names,
+            "subject_ids": manifold_subject_ids,
+            "family_prior": (
+                model.fusion.family_prior.detach().cpu().numpy()
+                if getattr(model, "use_manifold_fusion", False)
+                else np.empty((0, 0), dtype=np.float32)
+            ),
         },
     }
     records["routing_records"] = build_compact_routing_records(records, anchor_vocab, family_ids, family_names)
@@ -614,6 +675,12 @@ def _uses_geodesic_artifact_protocol(model, args):
     ) == "paper4"
 
 
+def _uses_manifold_artifact_protocol(model, args):
+    return bool(getattr(model, "use_manifold_fusion", False)) and getattr(
+        args, "paper_config", "none"
+    ) == "paper4"
+
+
 def evaluate_and_save(
     model,
     bank,
@@ -632,6 +699,7 @@ def evaluate_and_save(
     is_v2 = getattr(model, "topomoe_version", "v1") == "v2"
     use_topomoe_artifacts = _uses_topomoe_artifact_protocol(model, args)
     use_geodesic_artifacts = _uses_geodesic_artifact_protocol(model, args)
+    use_manifold_artifacts = _uses_manifold_artifact_protocol(model, args)
     records = collect_alignment_records(
         model,
         bank,
@@ -682,6 +750,30 @@ def evaluate_and_save(
             context=context,
         )
         save_topomoe_figure_manifest(manifest, out_dir)
+    elif use_manifold_artifacts:
+        context = figure_context or {}
+        save_manifold_artifacts(records, anchor_vocab, out_dir)
+        figures = save_manifold_figures(records, metrics, anchor_vocab, out_dir)
+        manifest = {
+            "status": "single_seed_prototype",
+            "limitation": "Final evidence requires five matched variants across seeds 42, 43, and 44.",
+            "seed": context.get("seed"),
+            "checkpoint_type": checkpoint_type,
+            "fusion_backend": context.get("fusion_backend"),
+            "spd_geometry": context.get("spd_geometry"),
+            "upper_graph": context.get("spd_upper_graph"),
+            "anchor_families": context.get("spd_anchor_families"),
+            "case_count": records.get("case_count"),
+            "source_artifacts": [
+                "manifold_feature_stats.json",
+                "manifold_case_records.json",
+                "manifold_graph_records.npz",
+                "manifold_topology.json",
+                metrics_filename,
+            ],
+            "figures": figures,
+        }
+        save_json(os.path.join(out_dir, "paper4_manifold_figure_manifest.json"), manifest)
     elif use_geodesic_artifacts:
         context = figure_context or {}
         diagnostics, graph = build_geodesic_payloads(records, context)
@@ -713,4 +805,5 @@ __all__ = [
     "metrics_from_records",
     "retrieval_metrics_from_scores",
     "_uses_geodesic_artifact_protocol",
+    "_uses_manifold_artifact_protocol",
 ]

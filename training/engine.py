@@ -199,6 +199,9 @@ def run_epoch(model, bank, loader, optimizer, device, args, case_lookup, key_to_
                     total
                     + args.lambda_geo_energy * geo_scale * _loss_or_zero(losses, "geo_energy", zero)
                     + args.lambda_path_semantic * geo_scale * path_semantic_loss
+                    + args.lambda_spd_condition * _loss_or_zero(losses, "spd_condition", zero)
+                    + args.lambda_manifold_topology
+                    * _loss_or_zero(losses, "manifold_topology", zero)
                 )
 
             if not torch.isfinite(total):
@@ -218,7 +221,12 @@ def run_epoch(model, bank, loader, optimizer, device, args, case_lookup, key_to_
                 fusion_module = getattr(model, "fusion", None)
                 if fusion_module is not None:
                     squared_norm = zero.detach()
-                    for parameter in fusion_module.geopath_net.parameters():
+                    gradient_parameters = (
+                        fusion_module.parameters()
+                        if getattr(model, "use_manifold_fusion", False)
+                        else fusion_module.geopath_net.parameters()
+                    )
+                    for parameter in gradient_parameters:
                         if parameter.grad is not None:
                             squared_norm = squared_norm + parameter.grad.detach().square().sum()
                     geopath_grad_norm = float(squared_norm.sqrt().cpu())
@@ -236,6 +244,8 @@ def run_epoch(model, bank, loader, optimizer, device, args, case_lookup, key_to_
             "within_anchor": within_anchor_loss,
             "geo_energy": _loss_or_zero(losses, "geo_energy", zero),
             "path_semantic": path_semantic_loss,
+            "spd_condition": _loss_or_zero(losses, "spd_condition", zero),
+            "manifold_topology": _loss_or_zero(losses, "manifold_topology", zero),
             "cons": _loss_or_zero(losses, "cons", zero),
             "decouple": _loss_or_zero(losses, "decouple", zero),
             "leak": _loss_or_zero(losses, "leak", zero),

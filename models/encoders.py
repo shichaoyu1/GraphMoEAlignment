@@ -31,5 +31,15 @@ class ROI2DEncoder(nn.Module):
     def forward(self, x):
         return self.net(x)
 
+    def forward_with_tokens(self, x):
+        """Return the legacy pooled feature and pre-pooling spatial tokens."""
+        value = x
+        tokens = None
+        for index, layer in enumerate(self.net):
+            value = layer(value)
+            if index == 14:
+                tokens = value.flatten(start_dim=2).transpose(1, 2)
+        return value, tokens
+
 
 __all__ = ["ROI2DEncoder"]
