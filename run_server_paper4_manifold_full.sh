@@ -45,6 +45,7 @@ run_variant() {
     PAPER4_PAPER_CONFIG=paper4 \
     PAPER4_FUSION_BACKEND="$backend" \
     PAPER4_SPD_GEOMETRY="$geometry" \
+    PAPER4_SPD_GRAPH_POLICY=legacy_softmax \
     PAPER4_DISABLE_SPD_UPPER_GRAPH="$disable_upper" \
     PAPER4_DISABLE_SPD_ANCHOR_FAMILIES="$disable_families" \
     PAPER4_FUSION_MODE="$fusion_mode" \

@@ -325,16 +325,13 @@ def save_ablation_evidence(metrics, out_dir, aggregate_payload=None):
         variants = aggregate_payload["variants"]
         labels = list(variants)
         values = [variants[name]["metrics"].get("map", {}).get("mean", np.nan) for name in labels]
-        intervals = [variants[name]["metrics"].get("map", {}).get("ci95", [value, value]) for name, value in zip(labels, values)]
-        errors = np.asarray(
-            [[value - interval[0] for value, interval in zip(values, intervals)], [interval[1] - value for value, interval in zip(values, intervals)]]
-        )
+        errors = [variants[name]["metrics"].get("map", {}).get("std", 0.0) for name in labels]
         ax.bar(range(len(labels)), values, yerr=errors, color="#2563EB", alpha=0.8, capsize=4)
         for x, name in enumerate(labels):
             seeds = variants[name]["metrics"].get("map", {}).get("values", [])
             ax.scatter(np.full(len(seeds), x), seeds, color=INK, s=24, zorder=3)
         ax.set_xticks(range(len(labels)), [name.replace("_", " ") for name in labels], rotation=22, ha="right")
-        ax.set_ylabel("mAP, mean and bootstrap 95% CI")
+        ax.set_ylabel("mAP, mean +/- seed SD")
     else:
         names = ["R@1", "mAP", "MRR"]
         values = [metrics.get("recall@1", np.nan), metrics.get("map", np.nan), metrics.get("mrr", np.nan)]
@@ -346,14 +343,99 @@ def save_ablation_evidence(metrics, out_dir, aggregate_payload=None):
     return _save(fig, path)
 
 
-def save_manifold_figures(records, metrics, anchor_vocab, out_dir):
+def save_graph_participation(records, out_dir, graph_role=None):
+    path = os.path.join(out_dir, "paper4_graph_participation.png")
+    graph_role = graph_role or {}
+    structural = graph_role.get("structural", {})
+    labels = [
+        "Local cross mass",
+        "Upper cross mass",
+        "Region-family mass",
+        "Local update ratio",
+        "Upper update ratio",
+        "Identity L2 shift",
+    ]
+    keys = [
+        "local_offdiagonal_mass",
+        "upper_offdiagonal_mass",
+        "region_family_mass",
+        "local_update_ratio",
+        "upper_update_ratio",
+        "identity_l2_shift",
+    ]
+    values = [structural.get(key, {}).get("mean", np.nan) for key in keys]
+    fig, ax = plt.subplots(figsize=(11.5, 5.4))
+    bars = ax.bar(range(len(labels)), values, color=["#2563EB", "#1D4ED8", "#D97706", "#059669", "#047857", "#7C3AED"])
+    for bar, value in zip(bars, values):
+        if np.isfinite(value):
+            ax.text(bar.get_x() + bar.get_width() / 2, value, f"{value:.3f}", ha="center", va="bottom", fontsize=9)
+    ax.set_xticks(range(len(labels)), labels, rotation=20, ha="right")
+    ax.set_ylabel("Mean diagnostic value")
+    ax.grid(axis="y", color=GRID, alpha=0.7)
+    ax.set_title("Measured graph participation", fontsize=15, weight="bold", color=INK)
+    return _save(fig, path)
+
+
+def save_graph_interventions(graph_role, out_dir):
+    path = os.path.join(out_dir, "paper4_graph_interventions.png")
+    scenarios = graph_role.get("interventions", {}) if graph_role else {}
+    names = list(scenarios)
+    metrics = ["delta_map", "delta_mrr", "delta_recall@1"]
+    colors = ["#2563EB", "#059669", "#D97706"]
+    fig, ax = plt.subplots(figsize=(12.5, 5.6))
+    x = np.arange(len(names))
+    width = 0.24
+    for index, (metric, color) in enumerate(zip(metrics, colors)):
+        values = [scenarios[name].get(metric, np.nan) for name in names]
+        ax.bar(x + (index - 1) * width, values, width, label=metric.replace("delta_", "Delta "), color=color)
+    ax.axhline(0, color=INK, lw=1)
+    ax.set_xticks(x, [name.replace("_", " ") for name in names], rotation=22, ha="right")
+    ax.set_ylabel("Metric delta vs full graph")
+    ax.legend(frameon=False)
+    ax.grid(axis="y", color=GRID, alpha=0.7)
+    ax.set_title("Graph counterfactual interventions", fontsize=15, weight="bold", color=INK)
+    return _save(fig, path)
+
+
+def save_manifold_ablation(metrics, out_dir, aggregate_payload=None):
+    path = os.path.join(out_dir, "paper4_manifold_ablation.png")
+    fig, ax = plt.subplots(figsize=(11.5, 5.6))
+    if aggregate_payload and aggregate_payload.get("variants"):
+        variants = aggregate_payload["variants"]
+        names = list(variants)
+        values = [variants[name]["metrics"]["map"].get("mean", np.nan) for name in names]
+        errors = [variants[name]["metrics"]["map"].get("std", 0.0) for name in names]
+        ax.bar(range(len(names)), values, yerr=errors, color="#2563EB", alpha=0.82, capsize=4)
+        for index, name in enumerate(names):
+            seeds = variants[name]["metrics"]["map"].get("values", [])
+            ax.scatter(np.full(len(seeds), index), seeds, color=INK, s=22, zorder=3)
+        ax.set_xticks(range(len(names)), [name.replace("_", " ") for name in names], rotation=24, ha="right")
+        ax.set_ylabel("mAP, mean +/- seed SD")
+    else:
+        overall = [metrics.get("recall@1", np.nan), metrics.get("map", np.nan), metrics.get("mrr", np.nan)]
+        macro = metrics.get("subgroups", {}).get("macro", {})
+        family = macro.get("target_family", {})
+        values = overall + [family.get("recall@1", np.nan), family.get("map", np.nan), family.get("mrr", np.nan)]
+        labels = ["R@1", "mAP", "MRR", "Family macro R@1", "Family macro mAP", "Family macro MRR"]
+        ax.bar(range(len(labels)), values, color=["#2563EB"] * 3 + ["#D97706"] * 3)
+        ax.set_xticks(range(len(labels)), labels, rotation=20, ha="right")
+        ax.set_ylim(0, 1)
+        ax.set_ylabel("Retrieval metric")
+    ax.grid(axis="y", color=GRID, alpha=0.7)
+    ax.set_title("Manifold, graph, and fusion evidence", fontsize=15, weight="bold", color=INK)
+    return _save(fig, path)
+
+
+def save_manifold_figures(records, metrics, anchor_vocab, out_dir, graph_role=None):
+    del anchor_vocab
     os.makedirs(out_dir, exist_ok=True)
     return [
         save_manifold_overview(out_dir),
         save_scale_to_manifold(records, out_dir),
         save_hierarchical_topology(records, out_dir),
-        save_case_semantic_flow(records, anchor_vocab, out_dir),
-        save_ablation_evidence(metrics, out_dir),
+        save_graph_participation(records, out_dir, graph_role=graph_role),
+        save_graph_interventions(graph_role or {}, out_dir),
+        save_manifold_ablation(metrics, out_dir),
     ]
 
 
@@ -364,4 +446,7 @@ __all__ = [
     "save_manifold_overview",
     "save_scale_to_manifold",
     "save_multiseed_topology",
+    "save_graph_participation",
+    "save_graph_interventions",
+    "save_manifold_ablation",
 ]

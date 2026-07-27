@@ -58,6 +58,10 @@ def save_manifold_artifacts(records, anchor_vocab, out_dir):
         raw_spd_traces=np.nan_to_num(manifold.get("raw_spd_traces", [])),
         spd_eigenvalues=np.nan_to_num(manifold.get("spd_eigenvalues", [])),
         condition_numbers=np.nan_to_num(manifold.get("condition_numbers", [])),
+        local_update_ratio=np.nan_to_num(manifold.get("local_update_ratio", [])),
+        upper_update_ratio=np.nan_to_num(manifold.get("upper_update_ratio", [])),
+        identity_l2_shift=np.nan_to_num(manifold.get("identity_l2_shift", [])),
+        identity_cosine_shift=np.nan_to_num(manifold.get("identity_cosine_shift", [])),
     )
     return feature_stats, topology, case_records
 

@@ -96,7 +96,10 @@ def run_epoch(model, bank, loader, optimizer, device, args, case_lookup, key_to_
     freeze_graph = training and (epoch <= args.graph_warmup_epochs)
     is_topomoe = bool(getattr(model, "use_topo_moe", False))
     is_topomoe_v2 = is_topomoe and getattr(model, "topomoe_version", "v1") == "v2"
-    is_geodesic = bool(getattr(model, "use_geodesic_fusion", False))
+    is_geodesic = bool(
+        getattr(model, "use_geodesic_fusion", False)
+        or getattr(model, "use_manifold_fusion", False)
+    )
     geo_scale = geodesic_loss_scale(epoch, args.geo_warmup_epochs) if is_geodesic else 0.0
 
     for batch in loader:

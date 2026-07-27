@@ -34,12 +34,19 @@ bash run_server_paper2_topomoe_full.sh
 
 The full launcher defaults to seeds `42 43 44`, evaluates the complete test split, and aggregates successful seed runs. Dataset paths and output locations remain local environment settings and are not committed.
 
-## Full Paper 4 server run
+## Paper 4 graph-evidence protocol
 
 ```bash
 DATA_ROOT=/path/to/UTSW-Glioma \
 METADATA_TSV=/path/to/metadata.tsv \
-bash run_server_paper4_geodesic_full.sh
+STAGE=screen \
+bash run_server_paper4_graph_evidence.sh
 ```
 
-This launcher runs the full model plus four matched ablations. See [PAPER4_GUIDE.md](PAPER4_GUIDE.md) for the background command, output layout, and artifact definitions.
+The screening stage runs the non-collapsing Log-Euclidean graph, graph/manifold
+ablations, and four matched published fusion baselines on seeds `42 43 44`.
+After screening, run the same launcher with `STAGE=confirm`; it automatically
+selects the best validation-set published baseline and adds seeds `45 46` for
+the main model and key controls. See
+[PAPER4_GRAPH_EVIDENCE.md](PAPER4_GRAPH_EVIDENCE.md) for background commands,
+outputs, and evidence boundaries.

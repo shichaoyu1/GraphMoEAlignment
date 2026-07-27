@@ -296,6 +296,7 @@ def collect_alignment_records(
     anchor_vocab,
     max_cases=None,
     collect_interventions=False,
+    graph_intervention=None,
 ):
     model.eval()
     bank.eval()
@@ -312,6 +313,8 @@ def collect_alignment_records(
     manifold_local_distances, manifold_upper_distances = [], []
     manifold_raw_scales, manifold_raw_traces = [], []
     manifold_eigenvalues, manifold_conditions = [], []
+    manifold_local_updates, manifold_upper_updates = [], []
+    manifold_identity_l2, manifold_identity_cosine = [], []
     manifold_upper_node_names = []
     manifold_subject_ids = []
     seen_cases = 0
@@ -328,14 +331,16 @@ def collect_alignment_records(
             subject_ids = list(batch["subject_id"])
             remaining = len(subject_ids) if max_cases is None else min(len(subject_ids), max_cases - seen_cases)
             prototypes_tensor = bank()
-            output = model(
-                images,
-                region_masks=region_masks,
-                return_extras=True,
-                anchor_prototypes=prototypes_tensor
+            model_kwargs = {
+                "region_masks": region_masks,
+                "return_extras": True,
+                "anchor_prototypes": prototypes_tensor
                 if getattr(model, "requires_anchor_prototypes", getattr(model, "use_topo_moe", False))
                 else None,
-            )
+            }
+            if graph_intervention is not None:
+                model_kwargs["graph_intervention"] = graph_intervention
+            output = model(images, **model_kwargs)
             shared_tensor = output["extras"]["shared"]
             shared_np = np.nan_to_num(shared_tensor.detach().cpu().numpy())
             routing = output["extras"].get("routing_weights")
@@ -400,6 +405,10 @@ def collect_alignment_records(
                 append_manifold("manifold_raw_spd_traces", manifold_raw_traces)
                 append_manifold("manifold_spd_eigenvalues", manifold_eigenvalues)
                 append_manifold("manifold_condition_numbers", manifold_conditions)
+                append_manifold("manifold_local_update_ratio", manifold_local_updates)
+                append_manifold("manifold_upper_update_ratio", manifold_upper_updates)
+                append_manifold("manifold_identity_l2_shift", manifold_identity_l2)
+                append_manifold("manifold_identity_cosine_shift", manifold_identity_cosine)
                 manifold_upper_node_names = list(
                     output["extras"].get("manifold_upper_node_names", manifold_upper_node_names)
                 )
@@ -532,6 +541,18 @@ def collect_alignment_records(
             "condition_numbers": np.concatenate(manifold_conditions, axis=0)
             if manifold_conditions
             else np.empty((0, 3, 4), dtype=np.float32),
+            "local_update_ratio": np.concatenate(manifold_local_updates, axis=0)
+            if manifold_local_updates
+            else np.empty((0, 3, 4), dtype=np.float32),
+            "upper_update_ratio": np.concatenate(manifold_upper_updates, axis=0)
+            if manifold_upper_updates
+            else np.empty((0, 0), dtype=np.float32),
+            "identity_l2_shift": np.concatenate(manifold_identity_l2, axis=0)
+            if manifold_identity_l2
+            else np.empty((0, 3), dtype=np.float32),
+            "identity_cosine_shift": np.concatenate(manifold_identity_cosine, axis=0)
+            if manifold_identity_cosine
+            else np.empty((0, 3), dtype=np.float32),
             "upper_node_names": manifold_upper_node_names,
             "subject_ids": manifold_subject_ids,
             "family_prior": (
@@ -625,6 +646,57 @@ def metrics_from_records(records, anchor_vocab, checkpoint_type=None):
         "direct": direct,
         "routed": routed,
     }
+    direct_scores = records["direct_scores"]
+    by_grade = {}
+    by_node = {}
+    for grade in sorted({record.get("grade", "unknown") for record in records["query_records"]}):
+        indices = [
+            index for index, record in enumerate(records["query_records"])
+            if record.get("grade", "unknown") == grade
+        ]
+        by_grade[grade] = _subset_score_metrics(direct_scores, records, indices)
+    for node in sorted({record["node_name"] for record in records["query_records"]}):
+        indices = [
+            index for index, record in enumerate(records["query_records"])
+            if record["node_name"] == node
+        ]
+        by_node[node] = _subset_score_metrics(direct_scores, records, indices)
+    by_family = {}
+    for family_index, family_name in enumerate(records.get("family_names", [])[:-1]):
+        gallery = [
+            index for index, value in enumerate(records.get("family_ids", []))
+            if int(value) == family_index
+        ]
+        indices = [
+            index for index, positives in enumerate(records["query_targets"])
+            if any(anchor_id in gallery for anchor_id in positives)
+        ]
+        if indices and gallery:
+            by_family[family_name] = retrieval_metrics_from_scores(
+                direct_scores[indices],
+                [records["query_targets"][index] for index in indices],
+                gallery_ids=gallery,
+                subject_ids=[records["query_subject_ids"][index] for index in indices],
+            )
+
+    def macro(groups):
+        result = {}
+        for metric in ("map", "mrr", "recall@1"):
+            values = [entry.get(metric, float("nan")) for entry in groups.values()]
+            finite = [float(value) for value in values if np.isfinite(value)]
+            result[metric] = float(np.mean(finite)) if finite else float("nan")
+        return result
+
+    payload["direct_subgroups"] = {
+        "by_grade": by_grade,
+        "by_node": by_node,
+        "by_target_family": by_family,
+        "macro": {
+            "grade": macro(by_grade),
+            "node": macro(by_node),
+            "target_family": macro(by_family),
+        },
+    }
     galleries = {
         "pathology_unavailable": [idx for idx, anchor in enumerate(anchor_vocab) if anchor["source"] != "Pathology"],
         "molecular_unavailable": [idx for idx, anchor in enumerate(anchor_vocab) if anchor["source"] != "Gene"],
@@ -640,6 +712,107 @@ def metrics_from_records(records, anchor_vocab, checkpoint_type=None):
         for name, gallery in galleries.items()
         if gallery
     }
+    return payload
+
+
+def _patient_average_precision(scores, records):
+    grouped = {}
+    for row, positives in enumerate(records["query_targets"]):
+        positives = set(int(value) for value in positives)
+        if not positives:
+            continue
+        order = np.argsort(-np.asarray(scores[row]))
+        hits = 0
+        precisions = []
+        for rank, anchor_id in enumerate(order, start=1):
+            if int(anchor_id) in positives:
+                hits += 1
+                precisions.append(hits / rank)
+        if precisions:
+            subject = str(records["query_subject_ids"][row])
+            grouped.setdefault(subject, []).append(float(np.mean(precisions)))
+    return {subject: float(np.mean(values)) for subject, values in grouped.items()}
+
+
+def _paired_ap_summary(baseline_scores, intervention_scores, records, seed=31):
+    baseline = _patient_average_precision(baseline_scores, records)
+    intervention = _patient_average_precision(intervention_scores, records)
+    subjects = sorted(set(baseline).intersection(intervention))
+    deltas = np.asarray([intervention[subject] - baseline[subject] for subject in subjects], dtype=float)
+    if not len(deltas):
+        return {"n": 0, "mean_delta": float("nan"), "ci95": [float("nan"), float("nan")]}
+    rng = np.random.default_rng(seed)
+    bootstrap = rng.choice(deltas, size=(5000, len(deltas)), replace=True).mean(axis=1)
+    return {
+        "n": int(len(deltas)),
+        "mean_delta": float(deltas.mean()),
+        "std_delta": float(deltas.std(ddof=1 if len(deltas) > 1 else 0)),
+        "ci95": [float(np.percentile(bootstrap, 2.5)), float(np.percentile(bootstrap, 97.5))],
+        "positive_fraction": float((deltas > 0).mean()),
+    }
+
+
+def paper4_graph_role_metrics(records, intervention_records):
+    manifold = records.get("manifold_fusion", {})
+    local = np.asarray(manifold.get("local_adjacency", []), dtype=float)
+    upper = np.asarray(manifold.get("upper_adjacency", []), dtype=float)
+    local_offdiag = local.sum(axis=-1) - np.diagonal(local, axis1=-2, axis2=-1) if local.size else np.asarray([])
+    upper_offdiag = upper.sum(axis=-1) - np.diagonal(upper, axis1=-2, axis2=-1) if upper.size else np.asarray([])
+    region_family = upper[:, :3, 3:].sum(axis=-1) if upper.ndim == 3 and upper.shape[-1] > 3 else np.asarray([])
+
+    def summary(values):
+        values = np.asarray(values, dtype=float)
+        values = values[np.isfinite(values)]
+        if not values.size:
+            return {"mean": float("nan"), "median": float("nan"), "n": 0}
+        return {
+            "mean": float(values.mean()),
+            "median": float(np.median(values)),
+            "std": float(values.std(ddof=1 if values.size > 1 else 0)),
+            "n": int(values.size),
+        }
+
+    baseline_metrics = retrieval_metrics_from_scores(
+        records["direct_scores"], records["query_targets"], subject_ids=records["query_subject_ids"]
+    )
+    payload = {
+        "baseline": baseline_metrics,
+        "structural": {
+            "local_offdiagonal_mass": summary(local_offdiag),
+            "upper_offdiagonal_mass": summary(upper_offdiag),
+            "region_family_mass": summary(region_family),
+            "local_update_ratio": summary(manifold.get("local_update_ratio", [])),
+            "upper_update_ratio": summary(manifold.get("upper_update_ratio", [])),
+            "identity_l2_shift": summary(manifold.get("identity_l2_shift", [])),
+            "identity_cosine_shift": summary(manifold.get("identity_cosine_shift", [])),
+            "identity_changed_fraction": float(
+                (np.asarray(manifold.get("identity_l2_shift", []), dtype=float) > 1e-8).mean()
+            ) if np.asarray(manifold.get("identity_l2_shift", [])).size else float("nan"),
+        },
+        "interventions": {},
+    }
+    for name, intervention in intervention_records.items():
+        metrics = retrieval_metrics_from_scores(
+            intervention["direct_scores"],
+            intervention["query_targets"],
+            subject_ids=intervention["query_subject_ids"],
+        )
+        vector_delta = np.linalg.norm(
+            np.asarray(intervention["query_vectors"]) - np.asarray(records["query_vectors"]), axis=-1
+        )
+        payload["interventions"][name] = {
+            "metrics": metrics,
+            "delta_map": float(metrics.get("map", np.nan) - baseline_metrics.get("map", np.nan)),
+            "delta_mrr": float(metrics.get("mrr", np.nan) - baseline_metrics.get("mrr", np.nan)),
+            "delta_recall@1": float(
+                metrics.get("recall@1", np.nan) - baseline_metrics.get("recall@1", np.nan)
+            ),
+            "embedding_l2_shift": summary(vector_delta),
+            "changed_fraction": float((vector_delta > 1e-8).mean()) if vector_delta.size else float("nan"),
+            "patient_ap": _paired_ap_summary(
+                records["direct_scores"], intervention["direct_scores"], records
+            ),
+        }
     return payload
 
 
@@ -681,6 +854,12 @@ def _uses_manifold_artifact_protocol(model, args):
     ) == "paper4"
 
 
+def _uses_published_baseline_protocol(model, args):
+    return bool(getattr(model, "use_published_baseline", False)) and getattr(
+        args, "paper_config", "none"
+    ) == "paper4"
+
+
 def evaluate_and_save(
     model,
     bank,
@@ -700,6 +879,7 @@ def evaluate_and_save(
     use_topomoe_artifacts = _uses_topomoe_artifact_protocol(model, args)
     use_geodesic_artifacts = _uses_geodesic_artifact_protocol(model, args)
     use_manifold_artifacts = _uses_manifold_artifact_protocol(model, args)
+    use_published_baseline = _uses_published_baseline_protocol(model, args)
     records = collect_alignment_records(
         model,
         bank,
@@ -713,6 +893,24 @@ def evaluate_and_save(
         collect_interventions=bool(run_interventions and is_v2),
     )
     metrics = metrics_from_records(records, anchor_vocab, checkpoint_type=checkpoint_type)
+    graph_role = {}
+    if use_manifold_artifacts and run_interventions:
+        intervention_records = {
+            name: collect_alignment_records(
+                model,
+                bank,
+                loader,
+                device,
+                args,
+                case_lookup,
+                key_to_id,
+                anchor_vocab,
+                max_cases=args.align_max_cases,
+                graph_intervention=name,
+            )
+            for name in ("identity", "uniform", "shuffle", "no_local", "no_upper", "no_region_family")
+        }
+        graph_role = paper4_graph_role_metrics(records, intervention_records)
     if not use_topomoe_artifacts:
         legacy_metrics = dict(metrics.get("direct", {}))
         legacy_metrics.update(
@@ -724,6 +922,8 @@ def evaluate_and_save(
                 "dropped_nonfinite_queries": metrics["dropped_nonfinite_queries"],
             }
         )
+        if use_manifold_artifacts or use_published_baseline:
+            legacy_metrics["subgroups"] = metrics.get("direct_subgroups", {})
         metrics = legacy_metrics
     save_json(os.path.join(out_dir, metrics_filename), metrics)
     save_patient_level_records(records, out_dir)
@@ -753,24 +953,39 @@ def evaluate_and_save(
     elif use_manifold_artifacts:
         context = figure_context or {}
         save_manifold_artifacts(records, anchor_vocab, out_dir)
-        figures = save_manifold_figures(records, metrics, anchor_vocab, out_dir)
+        if graph_role:
+            save_json(os.path.join(out_dir, "graph_role_metrics.json"), graph_role)
+        figures = save_manifold_figures(
+            records, metrics, anchor_vocab, out_dir, graph_role=graph_role
+        )
+        total_parameters = sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad)
+        fusion_parameters = sum(
+            parameter.numel() for parameter in model.fusion.parameters() if parameter.requires_grad
+        )
         manifest = {
             "status": "single_seed_prototype",
-            "limitation": "Final evidence requires five matched variants across seeds 42, 43, and 44.",
+            "limitation": "Single-seed artifacts are diagnostic; paper claims use aggregate evidence checks.",
             "seed": context.get("seed"),
             "checkpoint_type": checkpoint_type,
             "fusion_backend": context.get("fusion_backend"),
             "spd_geometry": context.get("spd_geometry"),
             "upper_graph": context.get("spd_upper_graph"),
             "anchor_families": context.get("spd_anchor_families"),
+            "graph_policy": context.get("spd_graph_policy"),
+            "graph_intervention": context.get("graph_intervention"),
+            "parameter_count": {
+                "total_trainable": int(total_parameters),
+                "fusion_trainable": int(fusion_parameters),
+            },
             "case_count": records.get("case_count"),
-            "source_artifacts": [
+            "source_artifacts": [value for value in [
                 "manifold_feature_stats.json",
                 "manifold_case_records.json",
                 "manifold_graph_records.npz",
                 "manifold_topology.json",
+                "graph_role_metrics.json" if graph_role else None,
                 metrics_filename,
-            ],
+            ] if value is not None],
             "figures": figures,
         }
         save_json(os.path.join(out_dir, "paper4_manifold_figure_manifest.json"), manifest)
@@ -791,6 +1006,26 @@ def evaluate_and_save(
             "figures": figures,
         }
         save_json(os.path.join(out_dir, "fusion_figure_manifest.json"), manifest)
+    elif use_published_baseline:
+        total_parameters = sum(parameter.numel() for parameter in model.parameters() if parameter.requires_grad)
+        fusion_parameters = sum(
+            parameter.numel() for parameter in model.fusion.parameters() if parameter.requires_grad
+        )
+        save_json(
+            os.path.join(out_dir, "paper4_baseline_manifest.json"),
+            {
+                "status": "single_seed",
+                "seed": (figure_context or {}).get("seed"),
+                "checkpoint_type": checkpoint_type,
+                "baseline": getattr(model, "paper4_baseline", None),
+                "case_count": records.get("case_count"),
+                "parameter_count": {
+                    "total_trainable": int(total_parameters),
+                    "fusion_trainable": int(fusion_parameters),
+                },
+                "source_artifacts": [metrics_filename, "patient_level_records.json"],
+            },
+        )
     else:
         save_json(os.path.join(out_dir, "semantic_alignment_metrics.json"), metrics)
         save_alignment_space_plot(records, anchor_vocab, out_dir)
@@ -803,7 +1038,9 @@ __all__ = [
     "evaluate_and_save",
     "intervention_metrics",
     "metrics_from_records",
+    "paper4_graph_role_metrics",
     "retrieval_metrics_from_scores",
     "_uses_geodesic_artifact_protocol",
     "_uses_manifold_artifact_protocol",
+    "_uses_published_baseline_protocol",
 ]

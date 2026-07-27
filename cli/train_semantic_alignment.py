@@ -77,13 +77,29 @@ def build_parser():
     parser.add_argument(
         "--paper4_fusion_backend",
         default="vector_geodesic",
-        choices=["vector_geodesic", "spd_hierarchical"],
+        choices=["vector_geodesic", "spd_hierarchical", "published_baseline"],
+    )
+    parser.add_argument(
+        "--paper4_baseline",
+        default="latent_concat",
+        choices=["latent_concat", "hemis", "gmu", "mbt_style"],
     )
     parser.add_argument("--spd_dim", type=int, default=16)
     parser.add_argument("--spd_geometry", default="spd", choices=["spd", "euclidean"])
     parser.add_argument("--spd_eigenvalue_min", type=float, default=1e-4)
     parser.add_argument("--spd_local_temperature", type=float, default=1.0)
     parser.add_argument("--spd_upper_temperature", type=float, default=1.0)
+    parser.add_argument(
+        "--spd_graph_policy", default="cross_budget", choices=["legacy_softmax", "cross_budget"]
+    )
+    parser.add_argument("--spd_local_cross_mass", type=float, default=0.35)
+    parser.add_argument("--spd_upper_cross_mass", type=float, default=0.40)
+    parser.add_argument("--spd_region_family_fraction", type=float, default=0.625)
+    parser.add_argument(
+        "--paper4_graph_intervention",
+        default="none",
+        choices=["none", "identity", "uniform", "shuffle", "no_local", "no_upper", "no_region_family"],
+    )
     parser.add_argument("--disable_spd_upper_graph", action="store_true")
     parser.add_argument("--disable_spd_anchor_families", action="store_true")
 
@@ -261,6 +277,12 @@ def main(args=None):
             spd_eigenvalue_min=args.spd_eigenvalue_min,
             spd_local_temperature=args.spd_local_temperature,
             spd_upper_temperature=args.spd_upper_temperature,
+            spd_graph_policy=args.spd_graph_policy,
+            spd_local_cross_mass=args.spd_local_cross_mass,
+            spd_upper_cross_mass=args.spd_upper_cross_mass,
+            spd_region_family_fraction=args.spd_region_family_fraction,
+            paper4_graph_intervention=args.paper4_graph_intervention,
+            paper4_baseline=args.paper4_baseline,
             use_spd_upper_graph=not args.disable_spd_upper_graph,
             use_spd_anchor_families=not args.disable_spd_anchor_families,
             anchor_family_ids=family_ids,
@@ -441,6 +463,9 @@ def main(args=None):
                 "fusion_graph": not args.disable_fusion_graph,
                 "spd_upper_graph": not args.disable_spd_upper_graph,
                 "spd_anchor_families": not args.disable_spd_anchor_families,
+                "spd_graph_policy": args.spd_graph_policy,
+                "graph_intervention": args.paper4_graph_intervention,
+                "published_baseline": args.paper4_baseline,
                 "history_path": os.path.join(args.out_dir, "history.json"),
             }
         metrics = evaluate_and_save(
@@ -460,7 +485,7 @@ def main(args=None):
                 if figure_context
                 else "direct_best"
             ),
-            run_interventions=False,
+            run_interventions=bool(is_paper4 and not args.skip_interventions),
             figure_context=figure_context,
         )
     return metrics

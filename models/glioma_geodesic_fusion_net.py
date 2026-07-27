@@ -6,6 +6,7 @@ import torch.nn as nn
 from glioma.models.encoders import ROI2DEncoder
 from glioma.modules.geodesic_fusion import GeodesicModalityGraphFusion
 from glioma.modules.hierarchical_spd_fusion import HierarchicalSPDGraphFusion
+from glioma.modules.published_fusion_baselines import PublishedModalityFusion
 
 
 class GliomaGeodesicFusionNet(nn.Module):
@@ -35,6 +36,12 @@ class GliomaGeodesicFusionNet(nn.Module):
         spd_upper_temperature: float = 1.0,
         use_spd_upper_graph: bool = True,
         use_spd_anchor_families: bool = True,
+        spd_graph_policy: str = "cross_budget",
+        spd_local_cross_mass: float = 0.35,
+        spd_upper_cross_mass: float = 0.40,
+        spd_region_family_fraction: float = 0.625,
+        paper4_graph_intervention: str = "none",
+        paper4_baseline: str = "latent_concat",
         anchor_family_ids=None,
         anchor_family_names=None,
         family_prior=None,
@@ -49,12 +56,16 @@ class GliomaGeodesicFusionNet(nn.Module):
         self.use_private = False
         self.use_diffusion = False
         self.use_topo_moe = False
-        self.use_geodesic_fusion = True
+        self.use_geodesic_fusion = paper4_fusion_backend == "vector_geodesic"
         self.requires_anchor_prototypes = True
         self.fusion_mode = fusion_mode
         self.paper4_fusion_backend = paper4_fusion_backend
         self.use_manifold_fusion = paper4_fusion_backend == "spd_hierarchical"
-        if paper4_fusion_backend not in {"vector_geodesic", "spd_hierarchical"}:
+        self.use_published_baseline = paper4_fusion_backend == "published_baseline"
+        self.paper4_baseline = paper4_baseline
+        if paper4_fusion_backend not in {
+            "vector_geodesic", "spd_hierarchical", "published_baseline"
+        }:
             raise ValueError(f"Unsupported Paper 4 fusion backend: {paper4_fusion_backend}")
 
         self.modality_encoders = nn.ModuleList(
@@ -85,6 +96,17 @@ class GliomaGeodesicFusionNet(nn.Module):
                 eigenvalue_min=spd_eigenvalue_min,
                 local_temperature=spd_local_temperature,
                 upper_temperature=spd_upper_temperature,
+                graph_policy=spd_graph_policy,
+                local_cross_mass=spd_local_cross_mass,
+                upper_cross_mass=spd_upper_cross_mass,
+                region_family_fraction=spd_region_family_fraction,
+                graph_intervention=paper4_graph_intervention,
+            )
+        elif self.use_published_baseline:
+            self.fusion = PublishedModalityFusion(
+                shared_dim=shared_dim,
+                num_modalities=num_modalities,
+                mode=paper4_baseline,
             )
         else:
             self.fusion = GeodesicModalityGraphFusion(
@@ -149,6 +171,7 @@ class GliomaGeodesicFusionNet(nn.Module):
         return_extras=False,
         freeze_graph=False,
         anchor_prototypes=None,
+        graph_intervention=None,
     ):
         del labels, freeze_graph
         if anchor_prototypes is None:
@@ -164,6 +187,7 @@ class GliomaGeodesicFusionNet(nn.Module):
                 spatial_tokens,
                 anchor_prototypes=anchor_prototypes,
                 modality_mask=modality_mask,
+                graph_intervention=graph_intervention,
             )
         else:
             fusion = self.fusion(
@@ -217,6 +241,13 @@ class GliomaGeodesicFusionNet(nn.Module):
                         "manifold_spd_eigenvalues": fusion["spd_eigenvalues"],
                         "manifold_condition_numbers": fusion["condition_numbers"],
                         "manifold_upper_node_names": fusion["upper_node_names"],
+                        "manifold_identity_fused_nodes": fusion["identity_fused_nodes"],
+                        "manifold_local_update_ratio": fusion["local_update_ratio"],
+                        "manifold_upper_update_ratio": fusion["upper_update_ratio"],
+                        "manifold_identity_l2_shift": fusion["identity_l2_shift"],
+                        "manifold_identity_cosine_shift": fusion["identity_cosine_shift"],
+                        "manifold_graph_intervention": fusion["graph_intervention"],
+                        "manifold_graph_policy": fusion["graph_policy"],
                     }
                 )
             output["extras"] = extras
