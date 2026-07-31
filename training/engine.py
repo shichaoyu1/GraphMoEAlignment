@@ -224,10 +224,12 @@ def run_epoch(model, bank, loader, optimizer, device, args, case_lookup, key_to_
                 fusion_module = getattr(model, "fusion", None)
                 if fusion_module is not None:
                     squared_norm = zero.detach()
+                    geopath_module = getattr(fusion_module, "geopath_net", None)
                     gradient_parameters = (
-                        fusion_module.parameters()
-                        if getattr(model, "use_manifold_fusion", False)
-                        else fusion_module.geopath_net.parameters()
+                        geopath_module.parameters()
+                        if geopath_module is not None
+                        and not getattr(model, "use_manifold_fusion", False)
+                        else fusion_module.parameters()
                     )
                     for parameter in gradient_parameters:
                         if parameter.grad is not None:

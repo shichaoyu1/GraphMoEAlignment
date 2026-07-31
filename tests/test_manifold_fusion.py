@@ -6,6 +6,7 @@ import unittest
 import numpy as np
 import torch
 
+from glioma.anchors import semantic_anchors
 from glioma.cli.aggregate_manifold_runs import CONFIRM_CORE_VARIANTS, SCREEN_VARIANTS, aggregate
 from glioma.cli.train_semantic_alignment import build_parser
 from glioma.eval.semantic_alignment_eval import evaluate_and_save
@@ -20,6 +21,7 @@ from glioma.modules.hierarchical_spd_fusion import (
 from glioma.modules.published_fusion_baselines import PublishedModalityFusion
 from glioma.visualization.manifold_fusion import save_manifold_figures
 from glioma.objectives import SemanticPrototypeBank
+from glioma.training.engine import run_epoch
 
 
 class ManifoldOperatorTests(unittest.TestCase):
@@ -106,6 +108,65 @@ class ManifoldOperatorTests(unittest.TestCase):
             outputs.append(result["fused_nodes"])
         sum(value.sum() for value in outputs).backward()
         self.assertTrue(torch.isfinite(nodes.grad).all())
+
+    def test_published_baselines_complete_training_epoch(self):
+        metadata = {
+            "Tumor Grade": "II",
+            "Tumor Type": "Glioma",
+            "IDH": "Mutant",
+            "MGMT": "Methylated",
+            "1p19Q CODEL": "Intact",
+        }
+        anchors = semantic_anchors(metadata)
+        key_to_id = {anchor["key"]: index for index, anchor in enumerate(anchors)}
+        case_lookup = {
+            "case_a": {"metadata": metadata},
+            "case_b": {"metadata": metadata},
+        }
+        loader = [{
+            "images": torch.randn(2, 4, 3, 32, 32),
+            "region_masks": torch.ones(2, 3, 3, 32, 32),
+            "subject_id": ["case_a", "case_b"],
+        }]
+        loss_context = {
+            "medclip_ignore_ids": {},
+            "family_ids": [],
+            "family_names": [],
+            "residual_index": 0,
+        }
+        for mode in ("latent_concat", "hemis", "gmu", "mbt_style"):
+            args = build_parser().parse_args([
+                "--data_root", "unused",
+                "--paper_config", "paper4",
+                "--paper4_fusion_backend", "published_baseline",
+                "--paper4_baseline", mode,
+            ])
+            model = GliomaGeodesicFusionNet(
+                z_slices=3,
+                feat_dim=16,
+                shared_dim=8,
+                paper4_fusion_backend="published_baseline",
+                paper4_baseline=mode,
+            )
+            bank = SemanticPrototypeBank(len(anchors), 8)
+            optimizer = torch.optim.AdamW(
+                list(model.parameters()) + list(bank.parameters()), lr=1e-4
+            )
+            result = run_epoch(
+                model,
+                bank,
+                loader,
+                optimizer,
+                torch.device("cpu"),
+                args,
+                case_lookup,
+                key_to_id,
+                1,
+                loss_context,
+            )
+            self.assertTrue(np.isfinite(result["losses"]["total"]), mode)
+            self.assertEqual(result["losses"]["nonfinite_batches"], 0.0, mode)
+            self.assertGreater(result["fusion"]["geopath_gradient_norm"], 0.0, mode)
 
     def test_model_does_not_use_labels(self):
         model = GliomaGeodesicFusionNet(

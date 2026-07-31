@@ -113,7 +113,7 @@ class PublishedModalityFusion(nn.Module):
             "pair_valid": torch.empty(batch, 0, device=nodes.device, dtype=torch.bool),
             "condition_loss": zero,
             "topology_loss": zero,
-            "diagnostics": {"published_baseline": self.mode},
+            "diagnostics": {},
         }
 
 
