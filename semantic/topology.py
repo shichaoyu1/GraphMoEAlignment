@@ -3,8 +3,8 @@
 Data-side helpers for the topology-guided mixture-of-anchor experts (TopoMoE).
 ``build_cooccurrence_prior`` derives a weak structural prior ``A_prior`` from
 train-set anchor co-occurrence; ``anchor_family_ids`` maps each anchor to an
-evidence-expert family (pathology / molecular / clinical) with a trailing
-``residual`` family that owns no anchor.
+evidence-expert family (pathology / molecular / clinical), with an optional
+trailing ``residual`` family that owns no anchor.
 """
 
 import torch
@@ -21,12 +21,12 @@ _SOURCE_TO_FAMILY = [
 RESIDUAL_FAMILY = "residual"
 
 
-def anchor_family_ids(anchor_vocab):
-    """Map each anchor to a family index; append a residual family at the end.
+def anchor_family_ids(anchor_vocab, include_residual=True):
+    """Map each anchor to a stable evidence-family index.
 
     Returns ``(family_ids, family_names)`` where ``family_ids[i]`` is the family
-    index of ``anchor_vocab[i]`` and ``family_names`` lists every family
-    (anchor-owning families in priority order, then ``residual``).
+    index of ``anchor_vocab[i]``. Legacy experiments append a residual family;
+    the Neurocomputing profiles disable it because it owns no retrieval anchor.
     """
     present_sources = {anchor.get("source", "") for anchor in anchor_vocab}
     family_names = [name for source, name in _SOURCE_TO_FAMILY if source in present_sources]
@@ -34,7 +34,8 @@ def anchor_family_ids(anchor_vocab):
     for source, name in _SOURCE_TO_FAMILY:
         if name in family_names:
             source_to_index[source] = family_names.index(name)
-    family_names = family_names + [RESIDUAL_FAMILY]
+    if include_residual:
+        family_names = family_names + [RESIDUAL_FAMILY]
 
     family_ids = []
     for anchor in anchor_vocab:
@@ -70,6 +71,27 @@ def build_cooccurrence_prior(train_cases, anchor_vocab, key_to_id):
     return prior
 
 
+def controlled_topology_prior(num_anchors, policy="uniform", seed=42):
+    """Build a deterministic training-time topology control.
+
+    Controls depend only on the train-fold vocabulary size. ``uniform`` removes
+    all edge information; ``random`` supplies a symmetric random graph before
+    row normalization.
+    """
+    if num_anchors < 1:
+        raise ValueError("num_anchors must be positive")
+    if policy == "uniform":
+        return torch.full((num_anchors, num_anchors), 1.0 / num_anchors)
+    if policy == "random":
+        generator = torch.Generator(device="cpu")
+        generator.manual_seed(int(seed))
+        weights = torch.rand(num_anchors, num_anchors, generator=generator)
+        weights = 0.5 * (weights + weights.t())
+        weights.fill_diagonal_(1.0)
+        return weights / weights.sum(dim=-1, keepdim=True).clamp(min=1e-8)
+    raise ValueError(f"Unsupported topology-control policy: {policy}")
+
+
 def aggregate_family_prior(anchor_prior, family_ids, family_names):
     """Aggregate an anchor transition prior into family-level topology."""
     num_families = len(family_names)
@@ -78,15 +100,19 @@ def aggregate_family_prior(anchor_prior, family_ids, family_names):
         membership[int(family), anchor] = 1.0
     membership = membership / membership.sum(dim=1, keepdim=True).clamp(min=1.0)
     prior = membership @ anchor_prior @ membership.t()
-    residual = num_families - 1
-    prior[residual] = 1.0
-    prior[:, residual] = torch.maximum(prior[:, residual], torch.full_like(prior[:, residual], 1e-2))
+    if family_names and family_names[-1] == RESIDUAL_FAMILY:
+        residual = num_families - 1
+        prior[residual] = 1.0
+        prior[:, residual] = torch.maximum(
+            prior[:, residual], torch.full_like(prior[:, residual], 1e-2)
+        )
     return prior / prior.sum(dim=-1, keepdim=True).clamp(min=1e-8)
 
 
 __all__ = [
     "anchor_family_ids",
     "build_cooccurrence_prior",
+    "controlled_topology_prior",
     "aggregate_family_prior",
     "RESIDUAL_FAMILY",
 ]

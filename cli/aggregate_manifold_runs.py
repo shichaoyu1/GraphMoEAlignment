@@ -154,6 +154,7 @@ def aggregate(run_root, out_dir=None, stage="auto", expected_seeds=None):
         "expected_seeds": expected_seeds,
         "variants": {},
         "paired_deltas_vs_spd_cross_graph": {},
+        "diagnostic_decomposition": {},
         "topology_stability": {},
         "graph_role": {},
     }
@@ -221,6 +222,21 @@ def aggregate(run_root, out_dir=None, stage="auto", expected_seeds=None):
             for name in ("recall@1", "map", "mrr")
         }
 
+    contrast_pairs = {
+        "geometry_gain": ("spd_cross_graph", "euclidean_cross_graph"),
+        "communication_gain": ("spd_uniform_graph", "spd_identity_graph"),
+        "allocation_gain": ("spd_cross_graph", "spd_uniform_graph"),
+    }
+    for name, (left_name, right_name) in contrast_pairs.items():
+        left = per_variant_by_seed.get(left_name, {})
+        right = per_variant_by_seed.get(right_name, {})
+        shared = sorted(set(left).intersection(right))
+        if shared:
+            payload["diagnostic_decomposition"][name] = _paired_stats([
+                _metric_value(left[seed], "map") - _metric_value(right[seed], "map")
+                for seed in shared
+            ])
+
     main_dirs = _seed_dirs(run_root, "spd_cross_graph") or _seed_dirs(run_root, "hierarchical_spd_graph")
     topologies = [
         _load(os.path.join(path, "manifold_topology.json"))
@@ -237,10 +253,11 @@ def aggregate(run_root, out_dir=None, stage="auto", expected_seeds=None):
             "upper_std": upper.std(axis=0, ddof=1 if len(upper) > 1 else 0).tolist(),
         }
 
-    graph_roles = [
-        _load(os.path.join(path, "graph_role_metrics.json"))
+    graph_role_pairs = [
+        (path, _load(os.path.join(path, "graph_role_metrics.json")))
         for path in main_dirs if os.path.exists(os.path.join(path, "graph_role_metrics.json"))
     ]
+    graph_roles = [entry for _, entry in graph_role_pairs]
     if graph_roles:
         structural_keys = sorted(graph_roles[0].get("structural", {}))
         intervention_names = sorted(graph_roles[0].get("interventions", {}))
@@ -284,6 +301,33 @@ def aggregate(run_root, out_dir=None, stage="auto", expected_seeds=None):
                 for name in intervention_names
             },
         }
+        intervention_costs = [
+            -float(entry["interventions"].get("uniform", {}).get("delta_map", np.nan))
+            for entry in graph_roles
+        ]
+        payload["diagnostic_decomposition"]["intervention_cost_learned_to_uniform"] = _stats(
+            intervention_costs
+        )
+        learned = per_variant_by_seed.get("spd_cross_graph", {})
+        uniform = per_variant_by_seed.get("spd_uniform_graph", {})
+        role_by_seed = {
+            int(os.path.basename(path).removeprefix("seed_")): role
+            for path, role in graph_role_pairs
+        }
+        shared = sorted(set(learned).intersection(uniform).intersection(role_by_seed))
+        if shared:
+            payload["diagnostic_decomposition"]["coadaptation_gap"] = _stats([
+                _metric_value(uniform[seed], "map")
+                - (
+                    _metric_value(learned[seed], "map")
+                    + float(
+                        role_by_seed[seed]["interventions"]
+                        .get("uniform", {})
+                        .get("delta_map", np.nan)
+                    )
+                )
+                for seed in shared
+            ])
 
     best, validation_scores = _best_published_baseline(run_root)
     if resolved_stage == "confirm":

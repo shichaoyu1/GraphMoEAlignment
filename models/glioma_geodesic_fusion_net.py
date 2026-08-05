@@ -40,6 +40,8 @@ class GliomaGeodesicFusionNet(nn.Module):
         spd_local_cross_mass: float = 0.35,
         spd_upper_cross_mass: float = 0.40,
         spd_region_family_fraction: float = 0.625,
+        spd_local_topology: str = "learned",
+        spd_upper_topology: str = "learned",
         paper4_graph_intervention: str = "none",
         paper4_baseline: str = "latent_concat",
         anchor_family_ids=None,
@@ -100,6 +102,8 @@ class GliomaGeodesicFusionNet(nn.Module):
                 local_cross_mass=spd_local_cross_mass,
                 upper_cross_mass=spd_upper_cross_mass,
                 region_family_fraction=spd_region_family_fraction,
+                local_topology=spd_local_topology,
+                upper_topology=spd_upper_topology,
                 graph_intervention=paper4_graph_intervention,
             )
         elif self.use_published_baseline:
@@ -248,6 +252,8 @@ class GliomaGeodesicFusionNet(nn.Module):
                         "manifold_identity_cosine_shift": fusion["identity_cosine_shift"],
                         "manifold_graph_intervention": fusion["graph_intervention"],
                         "manifold_graph_policy": fusion["graph_policy"],
+                        "manifold_local_topology": fusion["local_topology"],
+                        "manifold_upper_topology": fusion["upper_topology"],
                     }
                 )
             output["extras"] = extras

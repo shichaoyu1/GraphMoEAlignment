@@ -1,5 +1,10 @@
 # Paper 4 Graph-Evidence Protocol
 
+> This file preserves the legacy three-seed screen/confirm protocol. The ICLR
+> protocol that separates split and model seeds is documented in
+> [PAPER4_GUIDE.md](PAPER4_GUIDE.md) and launched by
+> `run_server_paper4_iclr_evidence.sh`.
+
 Paper 4 uses modality-specific MRI encoders and Log-Euclidean SPD descriptors.
 The default `cross_budget` graph separates self mass from cross-node mass, so
 distance softmax cannot collapse back to identity. Local modality graphs reserve
@@ -9,6 +14,10 @@ distance softmax cannot collapse back to identity. Local modality graphs reserve
 This is an architectural participation guarantee, not a guarantee of improved
 retrieval. Performance claims are made only from the matched interventions and
 multi-seed results.
+
+Training topology is now selected with `--spd_local_topology` and
+`--spd_upper_topology`. `--paper4_graph_intervention` is reserved for evaluation
+of a trained checkpoint. Historical output directories remain readable.
 
 ## Screening
 

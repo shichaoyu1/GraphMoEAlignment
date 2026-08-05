@@ -25,6 +25,8 @@ PYTHON_BIN="${PYTHON_BIN:-python}"
 RUN_NAME="${RUN_NAME:-paper2_topomoe_tune_$(date +%Y%m%d_%H%M%S)}"
 PAPER_CONFIGS="${PAPER_CONFIGS:-paper2}"
 SEEDS="${SEEDS:-42}"
+SPLIT_SEEDS="${SPLIT_SEEDS:-}"
+MODEL_SEEDS="${MODEL_SEEDS:-}"
 
 DATA_ROOT="${DATA_ROOT:-}"
 METADATA_TSV="${METADATA_TSV:-}"
@@ -82,6 +84,8 @@ SPD_LOCAL_CROSS_MASS="${SPD_LOCAL_CROSS_MASS:-0.35}"
 SPD_UPPER_CROSS_MASS="${SPD_UPPER_CROSS_MASS:-0.40}"
 SPD_REGION_FAMILY_FRACTION="${SPD_REGION_FAMILY_FRACTION:-0.625}"
 PAPER4_GRAPH_INTERVENTION="${PAPER4_GRAPH_INTERVENTION:-none}"
+SPD_LOCAL_TOPOLOGY="${SPD_LOCAL_TOPOLOGY:-learned}"
+SPD_UPPER_TOPOLOGY="${SPD_UPPER_TOPOLOGY:-learned}"
 GRAPH_TOP_K="${GRAPH_TOP_K:-3}"
 ALIGN_MAX_CASES="${ALIGN_MAX_CASES:-}"
 NUM_WORKERS="${NUM_WORKERS:-0}"
@@ -298,7 +302,7 @@ export PYTHONPATH="$WORKSPACE_ROOT${PYTHONPATH:+:$PYTHONPATH}"
 export PYTHONUNBUFFERED=1
 
 SUMMARY_FILE="$RUN_LOG_ROOT/runs.tsv"
-echo -e "paper\tseed\tstatus\tout_dir\tlog_file" > "$SUMMARY_FILE"
+echo -e "paper\tsplit_seed\tmodel_seed\tstatus\tout_dir\tlog_file" > "$SUMMARY_FILE"
 
 echo "[INFO] Workspace root: $WORKSPACE_ROOT"
 echo "[INFO] Project root:   $PROJECT_ROOT"
@@ -306,11 +310,28 @@ echo "[INFO] Output root:    $RUN_OUTPUT_ROOT"
 echo "[INFO] Log root:       $RUN_LOG_ROOT"
 echo "[INFO] Papers:         $PAPER_CONFIGS"
 echo "[INFO] Seeds:          $SEEDS"
+echo "[INFO] Split seeds:    ${SPLIT_SEEDS:-legacy alias}"
+echo "[INFO] Model seeds:    ${MODEL_SEEDS:-legacy alias}"
 
 trap stop_gpu_logger EXIT
-start_gpu_logger
+if ! is_true "$DRY_RUN"; then
+  start_gpu_logger
+fi
 
 failures=()
+run_specs=()
+if [[ -n "$SPLIT_SEEDS" || -n "$MODEL_SEEDS" ]]; then
+  [[ -n "$SPLIT_SEEDS" && -n "$MODEL_SEEDS" ]] || die "SPLIT_SEEDS and MODEL_SEEDS must be set together"
+  for split_seed in $SPLIT_SEEDS; do
+    for model_seed in $MODEL_SEEDS; do
+      run_specs+=("${split_seed}:${model_seed}:factorial")
+    done
+  done
+else
+  for seed in $SEEDS; do
+    run_specs+=("${seed}:${seed}:legacy")
+  done
+fi
 
 for paper in $PAPER_CONFIGS; do
   case "$paper" in
@@ -371,6 +392,8 @@ for paper in $PAPER_CONFIGS; do
   spd_local_cross_mass="$(paper_cfg "$paper" SPD_LOCAL_CROSS_MASS "$SPD_LOCAL_CROSS_MASS")"
   spd_upper_cross_mass="$(paper_cfg "$paper" SPD_UPPER_CROSS_MASS "$SPD_UPPER_CROSS_MASS")"
   spd_region_family_fraction="$(paper_cfg "$paper" SPD_REGION_FAMILY_FRACTION "$SPD_REGION_FAMILY_FRACTION")"
+  spd_local_topology="$(paper_cfg "$paper" SPD_LOCAL_TOPOLOGY "$SPD_LOCAL_TOPOLOGY")"
+  spd_upper_topology="$(paper_cfg "$paper" SPD_UPPER_TOPOLOGY "$SPD_UPPER_TOPOLOGY")"
   paper4_graph_intervention="$(paper_cfg "$paper" GRAPH_INTERVENTION "$PAPER4_GRAPH_INTERVENTION")"
   graph_top_k="$(paper_cfg "$paper" GRAPH_TOP_K "$GRAPH_TOP_K")"
   align_max_cases="$(paper_cfg "$paper" ALIGN_MAX_CASES "$ALIGN_MAX_CASES")"
@@ -409,9 +432,15 @@ for paper in $PAPER_CONFIGS; do
   skip_interventions="$(paper_cfg "$paper" SKIP_INTERVENTIONS "$SKIP_INTERVENTIONS")"
   paper_extra_args="$(paper_cfg "$paper" EXTRA_ARGS "")"
 
-  for seed in $SEEDS; do
-    out_dir="$RUN_OUTPUT_ROOT/$paper/seed_${seed}"
-    log_file="$RUN_LOG_ROOT/${paper}_seed_${seed}.log"
+  for run_spec in "${run_specs[@]}"; do
+    IFS=: read -r split_seed model_seed seed_mode <<< "$run_spec"
+    if [[ "$seed_mode" == "factorial" ]]; then
+      run_label="split_${split_seed}_model_${model_seed}"
+    else
+      run_label="seed_${model_seed}"
+    fi
+    out_dir="$RUN_OUTPUT_ROOT/$paper/$run_label"
+    log_file="$RUN_LOG_ROOT/${paper}_${run_label}.log"
     mkdir -p "$out_dir"
 
     cmd=(
@@ -461,6 +490,8 @@ for paper in $PAPER_CONFIGS; do
       --spd_local_cross_mass "$spd_local_cross_mass"
       --spd_upper_cross_mass "$spd_upper_cross_mass"
       --spd_region_family_fraction "$spd_region_family_fraction"
+      --spd_local_topology "$spd_local_topology"
+      --spd_upper_topology "$spd_upper_topology"
       --paper4_graph_intervention "$paper4_graph_intervention"
       --graph_top_k "$graph_top_k"
       --num_workers "$num_workers"
@@ -484,7 +515,9 @@ for paper in $PAPER_CONFIGS; do
       --lambda_spd_condition "$lambda_spd_condition"
       --lambda_manifold_topology "$lambda_manifold_topology"
       --grad_clip "$grad_clip"
-      --seed "$seed"
+      --seed "$model_seed"
+      --split_seed "$split_seed"
+      --model_seed "$model_seed"
     )
 
     if [[ -n "$METADATA_TSV" ]]; then
@@ -516,13 +549,13 @@ for paper in $PAPER_CONFIGS; do
     append_words "$paper_extra_args" cmd
 
     echo
-    echo "[INFO] Starting $paper seed=$seed"
+    echo "[INFO] Starting $paper split_seed=$split_seed model_seed=$model_seed"
     printf '[INFO] Command:'
     printf ' %q' "${cmd[@]}"
     printf '\n'
 
     if is_true "$DRY_RUN"; then
-      echo -e "$paper\t$seed\tDRY_RUN\t$out_dir\t$log_file" >> "$SUMMARY_FILE"
+      echo -e "$paper\t$split_seed\t$model_seed\tDRY_RUN\t$out_dir\t$log_file" >> "$SUMMARY_FILE"
       continue
     fi
 
@@ -532,12 +565,12 @@ for paper in $PAPER_CONFIGS; do
     set -e
 
     if [[ "$status" -eq 0 ]]; then
-      echo "[INFO] Finished $paper seed=$seed"
-      echo -e "$paper\t$seed\tOK\t$out_dir\t$log_file" >> "$SUMMARY_FILE"
+      echo "[INFO] Finished $paper split_seed=$split_seed model_seed=$model_seed"
+      echo -e "$paper\t$split_seed\t$model_seed\tOK\t$out_dir\t$log_file" >> "$SUMMARY_FILE"
     else
-      echo "[ERROR] Failed $paper seed=$seed status=$status"
-      echo -e "$paper\t$seed\tFAIL:$status\t$out_dir\t$log_file" >> "$SUMMARY_FILE"
-      failures+=("${paper}:seed_${seed}:status_${status}")
+      echo "[ERROR] Failed $paper split_seed=$split_seed model_seed=$model_seed status=$status"
+      echo -e "$paper\t$split_seed\t$model_seed\tFAIL:$status\t$out_dir\t$log_file" >> "$SUMMARY_FILE"
+      failures+=("${paper}:${run_label}:status_${status}")
     fi
   done
 done

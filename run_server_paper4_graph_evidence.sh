@@ -41,6 +41,8 @@ run_variant() {
   local baseline="$7"
   local seeds="$8"
   local skip_interventions="$9"
+  local local_topology="${10:-learned}"
+  local upper_topology="${11:-learned}"
 
   echo "[INFO] Paper 4 graph-evidence variant: $variant (seeds: $seeds)"
   env \
@@ -59,6 +61,8 @@ run_variant() {
     PAPER4_SPD_LOCAL_CROSS_MASS=0.35 \
     PAPER4_SPD_UPPER_CROSS_MASS=0.40 \
     PAPER4_SPD_REGION_FAMILY_FRACTION=0.625 \
+    PAPER4_SPD_LOCAL_TOPOLOGY="$local_topology" \
+    PAPER4_SPD_UPPER_TOPOLOGY="$upper_topology" \
     PAPER4_GRAPH_INTERVENTION="$intervention" \
     PAPER4_DISABLE_SPD_UPPER_GRAPH="$disable_upper" \
     PAPER4_DISABLE_SPD_ANCHOR_FAMILIES="$disable_families" \
@@ -75,12 +79,12 @@ run_variant() {
 
 run_spd_set() {
   local seeds="$1"
-  run_variant spd_cross_graph spd_hierarchical spd none 0 0 latent_concat "$seeds" 0
-  run_variant spd_identity_graph spd_hierarchical spd identity 0 0 latent_concat "$seeds" 1
-  run_variant spd_uniform_graph spd_hierarchical spd uniform 0 0 latent_concat "$seeds" 1
-  run_variant spd_local_only spd_hierarchical spd none 1 0 latent_concat "$seeds" 1
-  run_variant spd_no_anchor_family spd_hierarchical spd none 0 1 latent_concat "$seeds" 1
-  run_variant euclidean_cross_graph spd_hierarchical euclidean none 0 0 latent_concat "$seeds" 1
+  run_variant spd_cross_graph spd_hierarchical spd none 0 0 latent_concat "$seeds" 0 learned learned
+  run_variant spd_identity_graph spd_hierarchical spd none 0 0 latent_concat "$seeds" 1 identity identity
+  run_variant spd_uniform_graph spd_hierarchical spd none 0 0 latent_concat "$seeds" 1 uniform uniform
+  run_variant spd_local_only spd_hierarchical spd none 1 0 latent_concat "$seeds" 1 learned identity
+  run_variant spd_no_anchor_family spd_hierarchical spd none 0 1 latent_concat "$seeds" 1 learned learned
+  run_variant euclidean_cross_graph spd_hierarchical euclidean none 0 0 latent_concat "$seeds" 1 learned learned
 }
 
 run_baseline() {

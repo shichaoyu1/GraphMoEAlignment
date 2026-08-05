@@ -1,6 +1,6 @@
 """Variant and semantic-alignment configuration helpers."""
 
-from glioma.config.paper_profiles import apply_paper_profile
+from glioma.config.paper_profiles import apply_paper2_experiment_profile, apply_paper_profile
 
 
 def apply_variant(args):
@@ -43,4 +43,4 @@ def apply_variant(args):
     return args
 
 
-__all__ = ["apply_variant", "apply_paper_profile"]
+__all__ = ["apply_variant", "apply_paper_profile", "apply_paper2_experiment_profile"]

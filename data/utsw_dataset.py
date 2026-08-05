@@ -208,6 +208,58 @@ def stratified_split(cases, train_ratio=0.7, val_ratio=0.1, seed=42):
     return splits
 
 
+def patient_cross_validation_split(cases, num_folds=5, fold=0, seed=2026):
+    """Deterministic patient-level CV with grade and label-availability strata.
+
+    The requested fold is the test set, the next fold is validation, and all
+    remaining folds form training. Subject identifiers are assigned once only.
+    """
+    if num_folds < 3:
+        raise ValueError("patient cross-validation requires at least three folds")
+    if not 0 <= int(fold) < int(num_folds):
+        raise ValueError(f"fold must be in [0, {num_folds - 1}]")
+
+    def available(metadata, keys):
+        return int(any(_clean_text(metadata.get(key)) not in {"", "na", "n/a", "none", "unknown"} for key in keys))
+
+    rng = np.random.default_rng(seed)
+    grouped = defaultdict(list)
+    for case in cases:
+        metadata = case.get("metadata", {})
+        signature = (
+            str(case.get("label", "unknown")),
+            available(metadata, ["IDH"]),
+            available(metadata, ["MGMT"]),
+            available(metadata, ["1p19Q CODEL", "1p19q", "1p19Q"]),
+        )
+        grouped[signature].append(case)
+
+    folds = [[] for _ in range(num_folds)]
+    fold_sizes = np.zeros(num_folds, dtype=np.int64)
+    for signature in sorted(grouped, key=str):
+        members = list(grouped[signature])
+        rng.shuffle(members)
+        for member in members:
+            minimum = np.flatnonzero(fold_sizes == fold_sizes.min())
+            target = int(rng.choice(minimum))
+            folds[target].append(member)
+            fold_sizes[target] += 1
+
+    test_fold = int(fold)
+    val_fold = (test_fold + 1) % num_folds
+    splits = {
+        "train": [case for idx, values in enumerate(folds) if idx not in {test_fold, val_fold} for case in values],
+        "val": list(folds[val_fold]),
+        "test": list(folds[test_fold]),
+    }
+    for values in splits.values():
+        values.sort(key=lambda item: item["subject_id"])
+    subject_sets = [{case["subject_id"] for case in values} for values in splits.values()]
+    if any(left.intersection(right) for idx, left in enumerate(subject_sets) for right in subject_sets[idx + 1 :]):
+        raise RuntimeError("patient leakage detected in cross-validation split")
+    return splits
+
+
 def describe_cases(cases):
     return dict(sorted(Counter(case["label"] for case in cases).items()))
 
@@ -347,4 +399,5 @@ __all__ = [
     "load_utsw_metadata",
     "parse_utsw_label",
     "stratified_split",
+    "patient_cross_validation_split",
 ]

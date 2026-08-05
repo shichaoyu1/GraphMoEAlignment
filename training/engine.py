@@ -9,6 +9,7 @@ from glioma.data.loaders import build_query_targets
 from glioma.semantic.losses import (
     anchor_center_loss,
     dcca_alignment_loss,
+    direct_to_routed_distillation_loss,
     geodesic_path_semantic_loss,
     masked_multi_positive_nll,
     medclip_multi_positive_loss,
@@ -86,10 +87,27 @@ def _loss_or_zero(losses, name, zero):
     return zero if value is None else value
 
 
-def run_epoch(model, bank, loader, optimizer, device, args, case_lookup, key_to_id, epoch, loss_context):
+def run_epoch(
+    model,
+    bank,
+    loader,
+    optimizer,
+    device,
+    args,
+    case_lookup,
+    key_to_id,
+    epoch,
+    loss_context,
+    stage="joint",
+):
     training = optimizer is not None
     model.train(training)
     bank.train(training)
+    if training and stage == "router":
+        for module_name in ("encoders", "shared_heads", "graph_builder", "graph_norm"):
+            module = getattr(model, module_name, None)
+            if module is not None:
+                module.eval()
     node_names = node_names_for_mode(args.node_mode)
     totals = Counter()
     cons_scale = graph_cons_scale(epoch, args.graph_warmup_epochs)
@@ -133,12 +151,13 @@ def run_epoch(model, bank, loader, optimizer, device, args, case_lookup, key_to_
             legacy_route_loss = zero
             family_route_loss = zero
             within_anchor_loss = zero
+            route_distill_loss = zero
             routed_scores = output["extras"].get("routed_scores")
             if routed_scores is None:
                 routed_scores = output["extras"].get("routed_logits")
 
             if is_topomoe_v2:
-                if not args.disable_family_balanced_route:
+                if stage != "direct" and not args.disable_family_balanced_route:
                     family_route_loss, within_anchor_loss = topomoe_family_balanced_losses(
                         output["extras"]["routing_weights"],
                         output["extras"]["family_log_probs"],
@@ -146,10 +165,20 @@ def run_epoch(model, bank, loader, optimizer, device, args, case_lookup, key_to_
                         loss_context["family_ids"],
                         loss_context["residual_index"],
                     )
-                if args.disable_family_balanced_route or output["extras"].get("routed_log_probs") is None:
+                if stage != "direct" and (
+                    args.disable_family_balanced_route
+                    or output["extras"].get("routed_log_probs") is None
+                ):
                     within_anchor_loss = masked_multi_positive_nll(
                         routed_scores.reshape(-1, routed_scores.shape[-1]),
                         target_ids,
+                    )
+                if stage != "direct":
+                    route_distill_loss = direct_to_routed_distillation_loss(
+                        queries,
+                        prototypes,
+                        routed_scores,
+                        temperature=getattr(args, "route_distill_temperature", 1.0),
                     )
             elif is_topomoe and routed_scores is not None:
                 legacy_route_loss = masked_multi_positive_nll(
@@ -178,7 +207,7 @@ def run_epoch(model, bank, loader, optimizer, device, args, case_lookup, key_to_
                 + args.lambda_gate_entropy * _loss_or_zero(losses, "gate_entropy", zero)
                 + args.lambda_load_balance * _loss_or_zero(losses, "load_balance", zero)
             )
-            if is_topomoe_v2:
+            if is_topomoe_v2 and stage != "direct":
                 total = (
                     total
                     + args.lambda_family_route * family_route_loss
@@ -187,8 +216,9 @@ def run_epoch(model, bank, loader, optimizer, device, args, case_lookup, key_to_
                     + args.lambda_topo_delta * _loss_or_zero(losses, "topo_delta", zero)
                     + args.lambda_specialize * _loss_or_zero(losses, "specialize", zero)
                     + args.lambda_anchor_family_balance * _loss_or_zero(losses, "route_balance", zero)
+                    + getattr(args, "lambda_route_distill", 0.0) * route_distill_loss
                 )
-            else:
+            elif not is_topomoe_v2:
                 total = (
                     total
                     + args.lambda_route * legacy_route_loss
@@ -247,6 +277,7 @@ def run_epoch(model, bank, loader, optimizer, device, args, case_lookup, key_to_
             "legacy_route": legacy_route_loss,
             "family_route": family_route_loss,
             "within_anchor": within_anchor_loss,
+            "route_distill": route_distill_loss,
             "geo_energy": _loss_or_zero(losses, "geo_energy", zero),
             "path_semantic": path_semantic_loss,
             "spd_condition": _loss_or_zero(losses, "spd_condition", zero),

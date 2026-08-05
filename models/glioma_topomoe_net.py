@@ -32,9 +32,13 @@ class GliomaTopoMoENet(nn.Module):
         route_mixture: str = "log_prob",
         refine_prototypes: bool = True,
         specialize_margin: float = 0.05,
+        routing_enabled: bool = True,
+        use_residual_expert: bool = True,
+        context_mode: str = "topology",
+        score_mode: str = "conditional",
     ):
         super().__init__()
-        if topo_prior is None or anchor_family_ids is None or num_families < 2:
+        if routing_enabled and (topo_prior is None or anchor_family_ids is None or num_families < 2):
             raise ValueError("GliomaTopoMoENet requires topology and at least two expert families")
         self.node_mode = node_mode
         self.num_input_modalities = num_modalities
@@ -44,8 +48,9 @@ class GliomaTopoMoENet(nn.Module):
         self.graph_type = graph_type
         self.use_private = False
         self.use_diffusion = False
-        self.use_topo_moe = True
-        self.moe_module = "topo_moe"
+        self.use_topo_moe = bool(routing_enabled)
+        self.requires_anchor_prototypes = bool(routing_enabled)
+        self.moe_module = "topo_moe" if routing_enabled else "none"
         self.topomoe_version = topomoe_version
 
         encoder_channels = z_slices * num_modalities if node_mode == "regions" else z_slices
@@ -78,7 +83,10 @@ class GliomaTopoMoENet(nn.Module):
             route_mixture=route_mixture,
             refine_prototypes=refine_prototypes,
             specialize_margin=specialize_margin,
-        )
+            use_residual_expert=use_residual_expert,
+            context_mode=context_mode,
+            score_mode=score_mode,
+        ) if routing_enabled else None
 
     def _encode_modalities(self, images):
         features = torch.stack(
@@ -122,9 +130,18 @@ class GliomaTopoMoENet(nn.Module):
         return self._encode_modalities(images)
 
     def route_shared_nodes(self, shared_nodes, anchor_prototypes, **intervention):
+        if self.topo_moe is None:
+            raise RuntimeError("Routing is disabled for the direct-only profile")
+        direct_scores = None
+        if anchor_prototypes is not None:
+            direct_scores = torch.matmul(
+                torch.nn.functional.normalize(shared_nodes, dim=-1),
+                torch.nn.functional.normalize(anchor_prototypes, dim=-1).t(),
+            ) / self.topo_moe.temperature
         return self.topo_moe(
             shared_nodes,
             anchor_prototypes=anchor_prototypes,
+            direct_scores=direct_scores,
             **intervention,
         )
 
@@ -148,24 +165,28 @@ class GliomaTopoMoENet(nn.Module):
             if freeze_graph and self.training:
                 adjacency = adjacency.detach()
             shared = self.graph_norm(shared + torch.matmul(adjacency, shared))
-        topo_out = self.route_shared_nodes(
-            shared,
-            anchor_prototypes,
-            **(topomoe_intervention or {}),
+        topo_out = (
+            self.route_shared_nodes(
+                shared,
+                anchor_prototypes,
+                **(topomoe_intervention or {}),
+            )
+            if self.use_topo_moe
+            else None
         )
+        zero = shared.sum() * 0
         losses = {
             "cons": graph_laplacian_consistency(shared_raw, adjacency)
             if adjacency is not None
             else shared_raw.sum() * 0,
-            "topo_prior": topo_out["topo_prior_loss"],
-            "topo_delta": topo_out["topo_delta_loss"],
-            "specialize": topo_out["specialize_loss"],
-            "route_balance": topo_out["balance_loss"],
-            "route_sparse": topo_out["sparse_loss"],
+            "topo_prior": topo_out["topo_prior_loss"] if topo_out else zero,
+            "topo_delta": topo_out["topo_delta_loss"] if topo_out else zero,
+            "specialize": topo_out["specialize_loss"] if topo_out else zero,
+            "route_balance": topo_out["balance_loss"] if topo_out else zero,
+            "route_sparse": topo_out["sparse_loss"] if topo_out else zero,
         }
         output = {"logits": None, "losses": losses}
         if return_extras:
-            zero = shared.sum() * 0
             output["extras"] = {
                 "raw_features": raw_features,
                 "shared_raw": shared_raw,
@@ -174,15 +195,15 @@ class GliomaTopoMoENet(nn.Module):
                 "shared_norm": shared.norm(dim=-1).mean().detach(),
                 "private_norm": zero.detach(),
                 "diffusion_residual_norm": zero.detach(),
-                "routing_weights": topo_out["routing_weights"],
-                "router_logits": topo_out["router_logits"],
-                "routed_scores": topo_out["routed_scores"],
-                "routed_log_probs": topo_out["routed_log_probs"],
-                "family_log_probs": topo_out["family_log_probs"],
-                "effective_topology": topo_out["effective_topology"],
+                "routing_weights": topo_out["routing_weights"] if topo_out else None,
+                "router_logits": topo_out["router_logits"] if topo_out else None,
+                "routed_scores": topo_out["routed_scores"] if topo_out else None,
+                "routed_log_probs": topo_out["routed_log_probs"] if topo_out else None,
+                "family_log_probs": topo_out["family_log_probs"] if topo_out else None,
+                "effective_topology": topo_out["effective_topology"] if topo_out else None,
                 "adjacency": adjacency,
-                "topology_diagnostics": topo_out["diagnostics"],
-                "residual_contribution": topo_out["residual_contribution"],
+                "topology_diagnostics": topo_out["diagnostics"] if topo_out else {},
+                "residual_contribution": topo_out["residual_contribution"] if topo_out else zero,
             }
         return output
 

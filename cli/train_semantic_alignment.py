@@ -23,6 +23,18 @@ def build_parser():
     parser.add_argument(
         "--paper_config", default="none", choices=["none", "paper1", "paper2", "paper3", "paper4"]
     )
+    parser.add_argument(
+        "--experiment_profile",
+        default="legacy",
+        choices=[
+            "legacy",
+            "direct_only",
+            "unstructured_family_moe",
+            "prior_guided_router",
+            "prior_plus_learned",
+        ],
+        help="Controlled Idea2 comparison profile",
+    )
     parser.add_argument("--out_dir", default=DEFAULT_OUT_DIR)
     parser.add_argument("--validation_output_root", default=DEFAULT_VALIDATION_OUTPUT_ROOT)
 
@@ -31,6 +43,9 @@ def build_parser():
     parser.add_argument("--max_cases", type=int, default=None)
     parser.add_argument("--train_ratio", type=float, default=0.7)
     parser.add_argument("--val_ratio", type=float, default=0.1)
+    parser.add_argument("--cv_folds", type=int, default=0)
+    parser.add_argument("--cv_fold", type=int, default=0)
+    parser.add_argument("--cv_seed", type=int, default=2026)
     parser.add_argument("--prefer_registered", action="store_true")
     parser.add_argument("--augment", action="store_true")
     parser.add_argument("--cache", action="store_true")
@@ -58,6 +73,9 @@ def build_parser():
     parser.add_argument("--route_mixture", default="log_prob", choices=["log_prob", "product"])
     parser.add_argument("--disable_topology_refinement", action="store_true")
     parser.add_argument("--disable_family_balanced_route", action="store_true")
+    parser.add_argument("--training_prior", default="empirical", choices=["empirical", "uniform", "random"])
+    parser.add_argument("--context_mode", default="topology", choices=["topology", "unstructured"])
+    parser.add_argument("--score_mode", default="conditional", choices=["conditional", "direct_residual"])
     parser.add_argument("--specialize_margin", type=float, default=0.05)
     parser.add_argument("--no_private", action="store_true")
     parser.add_argument("--no_diffusion", action="store_true")
@@ -96,6 +114,16 @@ def build_parser():
     parser.add_argument("--spd_upper_cross_mass", type=float, default=0.40)
     parser.add_argument("--spd_region_family_fraction", type=float, default=0.625)
     parser.add_argument(
+        "--spd_local_topology",
+        default="learned",
+        choices=["learned", "identity", "uniform"],
+    )
+    parser.add_argument(
+        "--spd_upper_topology",
+        default="learned",
+        choices=["learned", "identity", "uniform"],
+    )
+    parser.add_argument(
         "--paper4_graph_intervention",
         default="none",
         choices=["none", "identity", "uniform", "shuffle", "no_local", "no_upper", "no_region_family"],
@@ -111,6 +139,12 @@ def build_parser():
     parser.add_argument("--graph_top_k", type=int, default=3)
 
     parser.add_argument("--epochs", type=int, default=30)
+    parser.add_argument("--direct_stage_epochs", type=int, default=None)
+    parser.add_argument("--router_stage_epochs", type=int, default=None)
+    parser.add_argument("--joint_stage_epochs", type=int, default=None)
+    parser.add_argument("--router_lr", type=float, default=3e-4)
+    parser.add_argument("--joint_lr_scale", type=float, default=0.1)
+    parser.add_argument("--stage_patience", type=int, default=None)
     parser.add_argument("--batch_size", type=int, default=4)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--weight_decay", type=float, default=1e-4)
@@ -136,15 +170,29 @@ def build_parser():
     parser.add_argument("--lambda_topo_delta", type=float, default=0.001)
     parser.add_argument("--lambda_specialize", type=float, default=0.1)
     parser.add_argument("--lambda_anchor_family_balance", type=float, default=0.05)
+    parser.add_argument("--lambda_route_distill", type=float, default=1.0)
+    parser.add_argument("--route_distill_temperature", type=float, default=1.0)
     parser.add_argument("--lambda_geo_energy", type=float, default=0.1)
     parser.add_argument("--lambda_path_semantic", type=float, default=0.1)
     parser.add_argument("--lambda_spd_condition", type=float, default=1e-3)
     parser.add_argument("--lambda_manifold_topology", type=float, default=0.05)
     parser.add_argument("--grad_clip", type=float, default=1.0)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--split_seed", type=int, default=None)
+    parser.add_argument("--model_seed", type=int, default=None)
     parser.add_argument("--skip_interventions", action="store_true")
+    parser.add_argument("--skip_efficiency_profile", action="store_true")
     parser.add_argument("--cpu", action="store_true")
     return parser
+
+
+def resolve_seeds(args):
+    """Resolve the legacy seed alias without coupling explicit split/model seeds."""
+    if args.split_seed is None:
+        args.split_seed = int(args.seed)
+    if args.model_seed is None:
+        args.model_seed = int(args.seed)
+    return args
 
 
 def _metric_score(metrics, fallback):
@@ -178,15 +226,60 @@ def _checkpoint_payload(model, bank, args, anchor_vocab, epoch, selection):
     }
 
 
+def _configure_training_stage(model, bank, stage):
+    for parameter in model.parameters():
+        parameter.requires_grad_(True)
+    for parameter in bank.parameters():
+        parameter.requires_grad_(True)
+    topo = getattr(model, "topo_moe", None)
+    if stage == "direct":
+        if topo is not None:
+            for parameter in topo.parameters():
+                parameter.requires_grad_(False)
+    elif stage == "router":
+        for parameter in model.parameters():
+            parameter.requires_grad_(False)
+        for parameter in bank.parameters():
+            parameter.requires_grad_(False)
+        if topo is None:
+            raise ValueError("Router stage requested for a model without a router")
+        for parameter in topo.parameters():
+            parameter.requires_grad_(True)
+    elif stage != "joint":
+        raise ValueError(f"Unsupported training stage: {stage}")
+
+
+def _stage_schedule(args, has_routing):
+    if args.experiment_profile == "legacy":
+        return [("joint", int(args.epochs), float(args.lr))]
+    schedule = [("direct", int(args.direct_stage_epochs), float(args.lr))]
+    if has_routing:
+        schedule.extend(
+            [
+                ("router", int(args.router_stage_epochs), float(args.router_lr)),
+                ("joint", int(args.joint_stage_epochs), float(args.lr) * float(args.joint_lr_scale)),
+            ]
+        )
+    return [(stage, epochs, lr) for stage, epochs, lr in schedule if epochs > 0]
+
+
 def main(args=None):
     if args is None:
         args = build_parser().parse_args()
     import torch
 
-    from glioma.config.semantic_alignment_config import apply_paper_profile, apply_variant
+    from glioma.config.semantic_alignment_config import (
+        apply_paper2_experiment_profile,
+        apply_paper_profile,
+        apply_variant,
+    )
     from glioma.data.case_discovery import discover_semantic_cases
     from glioma.data.loaders import make_loader
-    from glioma.data.utsw_dataset import describe_cases, stratified_split
+    from glioma.data.utsw_dataset import (
+        describe_cases,
+        patient_cross_validation_split,
+        stratified_split,
+    )
     from glioma.eval.semantic_alignment_eval import collect_alignment_records, evaluate_and_save, metrics_from_records
     from glioma.io.artifacts import save_json
     from glioma.models.glioma_graph_diffusion_net import GliomaGraphDiffusionNet
@@ -197,27 +290,45 @@ def main(args=None):
         aggregate_family_prior,
         anchor_family_ids,
         build_cooccurrence_prior,
+        controlled_topology_prior,
     )
     from glioma.semantic.vocab import build_anchor_vocab, build_medclip_ignore_ids
     from glioma.training.engine import run_epoch, set_seed
+    from glioma.training.efficiency import profile_model_efficiency
 
-    args = apply_paper_profile(apply_variant(args))
+    args = resolve_seeds(
+        apply_paper2_experiment_profile(apply_paper_profile(apply_variant(args)))
+    )
     if args.paper_config != "none" and args.out_dir == DEFAULT_OUT_DIR:
         args.out_dir = os.path.join(args.validation_output_root, args.paper_config)
     os.makedirs(args.out_dir, exist_ok=True)
-    set_seed(args.seed)
+    set_seed(args.model_seed)
     device = "cuda" if torch.cuda.is_available() and not args.cpu else "cpu"
 
     cases = discover_semantic_cases(
         args.data_root,
         metadata_tsv=args.metadata_tsv,
         max_cases=args.max_cases,
-        seed=args.seed,
+        seed=args.split_seed,
         include_clinical=args.include_clinical_anchors,
     )
     if len(cases) < 2:
         raise ValueError(f"Need at least 2 semantic cases; found {len(cases)}")
-    splits = stratified_split(cases, train_ratio=args.train_ratio, val_ratio=args.val_ratio, seed=args.seed)
+    splits = (
+        patient_cross_validation_split(
+            cases,
+            num_folds=args.cv_folds,
+            fold=args.cv_fold,
+            seed=args.cv_seed,
+        )
+        if args.cv_folds > 1
+        else stratified_split(
+            cases,
+            train_ratio=args.train_ratio,
+            val_ratio=args.val_ratio,
+            seed=args.split_seed,
+        )
+    )
     if not splits["val"]:
         splits["val"] = list(splits["test"])
     if not splits["test"]:
@@ -232,7 +343,11 @@ def main(args=None):
     if len(anchor_vocab) < 2:
         raise ValueError("Need at least two train-set semantic anchors")
 
-    family_ids, family_names = anchor_family_ids(anchor_vocab)
+    use_residual_expert = bool(getattr(args, "use_residual_expert", True))
+    family_ids, family_names = anchor_family_ids(
+        anchor_vocab,
+        include_residual=use_residual_expert,
+    )
     needs_topology = args.moe_module == "topo_moe" or (
         args.paper_config == "paper4" and args.paper4_fusion_backend == "spd_hierarchical"
     )
@@ -241,6 +356,12 @@ def main(args=None):
         if needs_topology
         else None
     )
+    if topo_prior is not None and args.training_prior != "empirical":
+        topo_prior = controlled_topology_prior(
+            len(anchor_vocab),
+            policy=args.training_prior,
+            seed=args.cv_seed + args.cv_fold * 1009,
+        )
     family_prior = (
         aggregate_family_prior(topo_prior, family_ids, family_names)
         if topo_prior is not None
@@ -252,11 +373,12 @@ def main(args=None):
         "medclip_ignore_ids": build_medclip_ignore_ids(anchor_vocab),
         "family_ids": family_ids,
         "family_names": family_names,
-        "residual_index": len(family_names) - 1,
+        "residual_index": len(family_names) - 1 if use_residual_expert else None,
     }
 
     is_paper4 = args.paper_config == "paper4"
     is_v2 = args.moe_module == "topo_moe" and args.topomoe_version == "v2"
+    routing_enabled = bool(getattr(args, "routing_enabled", True))
     if is_paper4:
         model = GliomaGeodesicFusionNet(
             z_slices=args.z_slices,
@@ -281,6 +403,8 @@ def main(args=None):
             spd_local_cross_mass=args.spd_local_cross_mass,
             spd_upper_cross_mass=args.spd_upper_cross_mass,
             spd_region_family_fraction=args.spd_region_family_fraction,
+            spd_local_topology=args.spd_local_topology,
+            spd_upper_topology=args.spd_upper_topology,
             paper4_graph_intervention=args.paper4_graph_intervention,
             paper4_baseline=args.paper4_baseline,
             use_spd_upper_graph=not args.disable_spd_upper_graph,
@@ -308,6 +432,10 @@ def main(args=None):
             route_mixture=args.route_mixture,
             refine_prototypes=not args.disable_topology_refinement,
             specialize_margin=args.specialize_margin,
+            routing_enabled=routing_enabled,
+            use_residual_expert=use_residual_expert,
+            context_mode=args.context_mode,
+            score_mode=args.score_mode,
         ).to(device)
     else:
         model = GliomaGraphDiffusionNet(
@@ -337,12 +465,6 @@ def main(args=None):
         ).to(device)
 
     bank = SemanticPrototypeBank(len(anchor_vocab), args.shared_dim).to(device)
-    optimizer = torch.optim.AdamW(
-        list(model.parameters()) + list(bank.parameters()),
-        lr=args.lr,
-        weight_decay=args.weight_decay,
-    )
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(args.epochs, 1))
 
     print(f"Semantic alignment cases: {len(cases)} | split labels: {describe_cases(cases)}")
     for split_name in ("train", "val", "test"):
@@ -354,7 +476,7 @@ def main(args=None):
     save_json(os.path.join(args.out_dir, "splits.json"), {name: [case["subject_id"] for case in values] for name, values in splits.items()})
 
     history = []
-    if is_v2:
+    if is_v2 and routing_enabled:
         checkpoint_paths = {
             "direct": os.path.join(args.out_dir, "best_direct_alignment.pt"),
             "routed": os.path.join(args.out_dir, "best_routed_topomoe.pt"),
@@ -380,38 +502,159 @@ def main(args=None):
         best = {"direct": -float("inf")}
         checkpoint_manifest = {"primary": "direct", "direct": {}}
 
-    for epoch in range(1, args.epochs + 1):
-        train_epoch = run_epoch(model, bank, loaders["train"], optimizer, device, args, case_lookup, key_to_id, epoch, loss_context)
-        val_epoch = run_epoch(model, bank, loaders["val"], None, device, args, case_lookup, key_to_id, epoch, loss_context)
-        val_records = collect_alignment_records(model, bank, loaders["val"], device, args, case_lookup, key_to_id, anchor_vocab)
-        val_metrics = metrics_from_records(val_records, anchor_vocab, checkpoint_type="validation")
-        scheduler.step()
-
-        history.append({"epoch": epoch, "train": train_epoch, "val": {**val_epoch, "direct": val_metrics["direct"], "routed": val_metrics["routed"]}})
-        save_json(os.path.join(args.out_dir, "history.json"), history)
-
-        direct_score, direct_selection = _checkpoint_selection(
-            val_metrics["direct"], -val_epoch["losses"]["alignment"], epoch
-        )
-        if direct_score > best["direct"]:
-            best["direct"] = direct_score
-            torch.save(_checkpoint_payload(model, bank, args, anchor_vocab, epoch, direct_selection), checkpoint_paths["direct"])
-            checkpoint_manifest["direct"] = {**direct_selection, "path": os.path.basename(checkpoint_paths["direct"])}
-
-        if is_v2:
-            routed_score, routed_selection = _checkpoint_selection(val_metrics["routed"], direct_score, epoch)
-            if routed_score > best["routed"]:
-                best["routed"] = routed_score
-                torch.save(_checkpoint_payload(model, bank, args, anchor_vocab, epoch, routed_selection), checkpoint_paths["routed"])
-                checkpoint_manifest["routed"] = {**routed_selection, "path": os.path.basename(checkpoint_paths["routed"])}
-        save_json(os.path.join(args.out_dir, "checkpoint_manifest.json"), checkpoint_manifest)
-
     def load_checkpoint(path):
         checkpoint = torch.load(path, map_location=device)
         model.load_state_dict(checkpoint["model"])
         bank.load_state_dict(checkpoint["bank"])
 
-    if is_v2:
+    global_epoch = 0
+    for stage, stage_epochs, stage_lr in _stage_schedule(args, routing_enabled):
+        if stage == "router" and os.path.exists(checkpoint_paths["direct"]):
+            load_checkpoint(checkpoint_paths["direct"])
+        if stage == "joint" and routing_enabled and os.path.exists(checkpoint_paths.get("routed", "")):
+            load_checkpoint(checkpoint_paths["routed"])
+        _configure_training_stage(model, bank, stage)
+        trainable = [
+            parameter
+            for parameter in list(model.parameters()) + list(bank.parameters())
+            if parameter.requires_grad
+        ]
+        optimizer = torch.optim.AdamW(trainable, lr=stage_lr, weight_decay=args.weight_decay)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=max(stage_epochs, 1),
+        )
+        stage_best = -float("inf")
+        stale_epochs = 0
+
+        for stage_epoch in range(1, stage_epochs + 1):
+            global_epoch += 1
+            train_epoch = run_epoch(
+                model,
+                bank,
+                loaders["train"],
+                optimizer,
+                device,
+                args,
+                case_lookup,
+                key_to_id,
+                global_epoch,
+                loss_context,
+                stage=stage,
+            )
+            val_epoch = run_epoch(
+                model,
+                bank,
+                loaders["val"],
+                None,
+                device,
+                args,
+                case_lookup,
+                key_to_id,
+                global_epoch,
+                loss_context,
+                stage=stage,
+            )
+            val_records = collect_alignment_records(
+                model,
+                bank,
+                loaders["val"],
+                device,
+                args,
+                case_lookup,
+                key_to_id,
+                anchor_vocab,
+            )
+            val_metrics = metrics_from_records(
+                val_records,
+                anchor_vocab,
+                checkpoint_type=f"validation_{stage}",
+            )
+            scheduler.step()
+
+            history.append(
+                {
+                    "epoch": global_epoch,
+                    "stage": stage,
+                    "stage_epoch": stage_epoch,
+                    "learning_rate": stage_lr,
+                    "train": train_epoch,
+                    "val": {
+                        **val_epoch,
+                        "direct": val_metrics["direct"],
+                        "routed": val_metrics["routed"],
+                    },
+                }
+            )
+            save_json(os.path.join(args.out_dir, "history.json"), history)
+
+            direct_score, direct_selection = _checkpoint_selection(
+                val_metrics["direct"],
+                -val_epoch["losses"]["alignment"],
+                global_epoch,
+            )
+            direct_selection.update({"stage": stage, "stage_epoch": stage_epoch})
+            if direct_score > best["direct"]:
+                best["direct"] = direct_score
+                torch.save(
+                    _checkpoint_payload(
+                        model,
+                        bank,
+                        args,
+                        anchor_vocab,
+                        global_epoch,
+                        direct_selection,
+                    ),
+                    checkpoint_paths["direct"],
+                )
+                checkpoint_manifest["direct"] = {
+                    **direct_selection,
+                    "path": os.path.basename(checkpoint_paths["direct"]),
+                }
+
+            monitor_score = direct_score
+            if routing_enabled and stage != "direct":
+                routed_score, routed_selection = _checkpoint_selection(
+                    val_metrics["routed"],
+                    direct_score,
+                    global_epoch,
+                )
+                routed_selection.update({"stage": stage, "stage_epoch": stage_epoch})
+                monitor_score = routed_score
+                if routed_score > best["routed"]:
+                    best["routed"] = routed_score
+                    torch.save(
+                        _checkpoint_payload(
+                            model,
+                            bank,
+                            args,
+                            anchor_vocab,
+                            global_epoch,
+                            routed_selection,
+                        ),
+                        checkpoint_paths["routed"],
+                    )
+                    checkpoint_manifest["routed"] = {
+                        **routed_selection,
+                        "path": os.path.basename(checkpoint_paths["routed"]),
+                    }
+            save_json(os.path.join(args.out_dir, "checkpoint_manifest.json"), checkpoint_manifest)
+
+            if monitor_score > stage_best:
+                stage_best = monitor_score
+                stale_epochs = 0
+            else:
+                stale_epochs += 1
+            patience = int(args.stage_patience or 0)
+            if patience and stale_epochs >= patience:
+                history[-1]["early_stopping"] = {
+                    "patience": patience,
+                    "monitor": "routed_map" if routing_enabled and stage != "direct" else "direct_map",
+                }
+                save_json(os.path.join(args.out_dir, "history.json"), history)
+                break
+
+    if is_v2 and routing_enabled:
         load_checkpoint(checkpoint_paths["direct"])
         direct_records = collect_alignment_records(
             model, bank, loaders["test"], device, args, case_lookup, key_to_id, anchor_vocab, max_cases=args.align_max_cases
@@ -420,6 +663,11 @@ def main(args=None):
         save_json(os.path.join(args.out_dir, "test_metrics_direct_checkpoint.json"), direct_checkpoint_metrics)
 
         load_checkpoint(checkpoint_paths["routed"])
+        if not args.skip_efficiency_profile:
+            save_json(
+                os.path.join(args.out_dir, "efficiency.json"),
+                profile_model_efficiency(model, bank, loaders["test"], device),
+            )
         metrics = evaluate_and_save(
             model,
             bank,
@@ -433,9 +681,14 @@ def main(args=None):
             checkpoint_type="routed_best",
             run_interventions=not args.skip_interventions,
             figure_context={
-                "seed": args.seed,
+                "seed": args.model_seed,
+                "split_seed": args.split_seed,
+                "model_seed": args.model_seed,
                 "checkpoint_type": "routed_best",
                 "topology_mode": args.topo_mode,
+                "experiment_profile": args.experiment_profile,
+                "training_prior": args.training_prior,
+                "score_mode": args.score_mode,
                 "history_path": os.path.join(args.out_dir, "history.json"),
                 "checkpoint_comparison": {
                     "direct_best": direct_checkpoint_metrics,
@@ -444,17 +697,26 @@ def main(args=None):
         )
     else:
         load_checkpoint(checkpoint_paths["direct"])
+        if not args.skip_efficiency_profile and args.experiment_profile != "legacy":
+            save_json(
+                os.path.join(args.out_dir, "efficiency.json"),
+                profile_model_efficiency(model, bank, loaders["test"], device),
+            )
         figure_context = None
         if args.paper_config == "paper2" and getattr(model, "use_topo_moe", False):
             figure_context = {
-                "seed": args.seed,
+                "seed": args.model_seed,
+                "split_seed": args.split_seed,
+                "model_seed": args.model_seed,
                 "checkpoint_type": "direct_best_v1",
                 "topology_mode": args.topo_mode,
                 "history_path": os.path.join(args.out_dir, "history.json"),
             }
         if is_paper4:
             figure_context = {
-                "seed": args.seed,
+                "seed": args.model_seed,
+                "split_seed": args.split_seed,
+                "model_seed": args.model_seed,
                 "checkpoint_type": "paper4_direct_best",
                 "fusion_mode": args.fusion_mode,
                 "fusion_backend": args.paper4_fusion_backend,
@@ -464,6 +726,8 @@ def main(args=None):
                 "spd_upper_graph": not args.disable_spd_upper_graph,
                 "spd_anchor_families": not args.disable_spd_anchor_families,
                 "spd_graph_policy": args.spd_graph_policy,
+                "spd_local_topology": args.spd_local_topology,
+                "spd_upper_topology": args.spd_upper_topology,
                 "graph_intervention": args.paper4_graph_intervention,
                 "published_baseline": args.paper4_baseline,
                 "history_path": os.path.join(args.out_dir, "history.json"),
@@ -495,4 +759,4 @@ if __name__ == "__main__":
     main()
 
 
-__all__ = ["build_parser", "main"]
+__all__ = ["build_parser", "resolve_seeds", "main"]

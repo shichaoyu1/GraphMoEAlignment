@@ -47,4 +47,45 @@ def apply_paper_profile(args):
     raise ValueError(f"Unsupported paper_config: {profile}")
 
 
-__all__ = ["apply_paper_profile"]
+def apply_paper2_experiment_profile(args):
+    """Resolve the controlled Paper 2 model comparison into explicit flags."""
+    profile = getattr(args, "experiment_profile", "legacy")
+    if profile == "legacy":
+        return args
+    if profile not in {
+        "direct_only",
+        "unstructured_family_moe",
+        "prior_guided_router",
+        "prior_plus_learned",
+    }:
+        raise ValueError(f"Unsupported Paper 2 experiment profile: {profile}")
+
+    args.paper_config = "paper2"
+    args.topomoe_version = "v2"
+    args.node_mode = "regions"
+    args.graph_type = "no_graph"
+    args.no_private = True
+    args.no_diffusion = True
+    args.moe_module = "topo_moe"
+    args.routing_enabled = profile != "direct_only"
+    args.use_residual_expert = False
+    args.context_mode = "unstructured" if profile == "unstructured_family_moe" else "topology"
+    args.topo_mode = "prior_plus_learned" if profile == "prior_plus_learned" else "prior_only"
+    if profile == "unstructured_family_moe":
+        args.disable_topology_refinement = True
+
+    direct_epochs = getattr(args, "direct_stage_epochs", None)
+    router_epochs = getattr(args, "router_stage_epochs", None)
+    joint_epochs = getattr(args, "joint_stage_epochs", None)
+    if direct_epochs is None:
+        args.direct_stage_epochs = int(getattr(args, "epochs", 30))
+    if router_epochs is None:
+        args.router_stage_epochs = 0 if profile == "direct_only" else 15
+    if joint_epochs is None:
+        args.joint_stage_epochs = 0 if profile == "direct_only" else 10
+    if getattr(args, "stage_patience", None) is None:
+        args.stage_patience = 8
+    return args
+
+
+__all__ = ["apply_paper_profile", "apply_paper2_experiment_profile"]

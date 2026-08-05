@@ -1,5 +1,8 @@
 # Paper 4 Hierarchical SPD Manifold Fusion
 
+> This is the reproduction guide for the legacy hierarchical experiment. The
+> evidence audit and current ICLR protocol live in [PAPER4_GUIDE.md](PAPER4_GUIDE.md).
+
 The new Paper 4 main path uses a two-level heterogeneous graph instead of
 feature-matrix concatenation:
 

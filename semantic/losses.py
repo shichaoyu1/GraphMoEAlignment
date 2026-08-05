@@ -33,7 +33,7 @@ def topomoe_family_balanced_losses(
     family_log_probs,
     target_ids,
     anchor_family_ids,
-    residual_index,
+    residual_index=None,
 ):
     """Equal-family router supervision plus within-family multi-positive NLL."""
     if routing_weights is None or family_log_probs is None:
@@ -54,7 +54,8 @@ def topomoe_family_balanced_losses(
             {
                 int(family_ids[anchor_id].item())
                 for anchor_id in positive_ids
-                if int(family_ids[anchor_id].item()) < int(residual_index)
+                if residual_index is None
+                or int(family_ids[anchor_id].item()) < int(residual_index)
             }
         )
         if not positive_families:
@@ -80,6 +81,24 @@ def topomoe_family_balanced_losses(
     family_route = torch.stack(family_route_losses).mean() if family_route_losses else zero
     within_anchor = torch.stack(within_anchor_losses).mean() if within_anchor_losses else zero
     return family_route, within_anchor
+
+
+def direct_to_routed_distillation_loss(
+    queries,
+    prototypes,
+    routed_scores,
+    temperature=1.0,
+):
+    """Distil the direct retrieval ranking into the routed score distribution."""
+    if routed_scores is None:
+        return queries.sum() * 0
+    temperature = max(float(temperature), 1e-8)
+    direct_logits = F.normalize(queries.detach(), dim=-1) @ F.normalize(
+        prototypes.detach(), dim=-1
+    ).t()
+    teacher = F.softmax(direct_logits / temperature, dim=-1)
+    student = F.log_softmax(routed_scores.reshape_as(direct_logits) / temperature, dim=-1)
+    return F.kl_div(student, teacher, reduction="batchmean") * (temperature ** 2)
 
 
 def geodesic_path_semantic_loss(interior_paths, pair_valid, target_ids, prototypes, temperature=0.07):
@@ -117,5 +136,6 @@ __all__ = [
     "dcca_alignment_loss",
     "anchor_center_loss",
     "topomoe_family_balanced_losses",
+    "direct_to_routed_distillation_loss",
     "geodesic_path_semantic_loss",
 ]

@@ -39,6 +39,9 @@ class TopoMoE(nn.Module):
         route_mixture: str = "log_prob",
         refine_prototypes: bool = True,
         specialize_margin: float = 0.05,
+        use_residual_expert: bool = True,
+        context_mode: str = "topology",
+        score_mode: str = "conditional",
     ):
         super().__init__()
         if version not in {"v1", "v2"}:
@@ -47,12 +50,19 @@ class TopoMoE(nn.Module):
             raise ValueError(f"Unsupported topology mode: {topo_mode}")
         if route_mixture not in {"product", "log_prob"}:
             raise ValueError(f"Unsupported route mixture: {route_mixture}")
+        if context_mode not in {"topology", "unstructured"}:
+            raise ValueError(f"Unsupported family-context mode: {context_mode}")
+        if score_mode not in {"conditional", "direct_residual"}:
+            raise ValueError(f"Unsupported routed-score mode: {score_mode}")
 
         num_anchors = int(topo_prior.shape[0])
         self.num_anchors = num_anchors
         self.num_families = int(num_families)
-        self.residual_index = self.num_families - 1
-        self.num_anchor_families = max(self.num_families - 1, 1)
+        self.use_residual_expert = bool(use_residual_expert)
+        self.residual_index = self.num_families - 1 if self.use_residual_expert else None
+        self.num_anchor_families = (
+            max(self.num_families - 1, 1) if self.use_residual_expert else self.num_families
+        )
         self.topo_mode = topo_mode
         self.temperature = float(temperature)
         self.version = version
@@ -61,6 +71,8 @@ class TopoMoE(nn.Module):
         self.route_mixture = "product" if version == "v1" else route_mixture
         self.refine_prototypes = bool(refine_prototypes and version == "v2")
         self.specialize_margin = float(specialize_margin)
+        self.context_mode = context_mode
+        self.score_mode = score_mode
 
         self.register_buffer("A_prior", topo_prior.float())
         family_ids = torch.as_tensor(anchor_family_ids, dtype=torch.long)
@@ -88,10 +100,14 @@ class TopoMoE(nn.Module):
         self.family_projections = nn.ModuleList(
             [nn.Linear(shared_dim, shared_dim) for _ in range(self.num_anchor_families)]
         )
-        self.residual_expert = nn.Sequential(
-            nn.Linear(shared_dim, shared_dim),
-            nn.LayerNorm(shared_dim),
-            nn.SiLU(),
+        self.residual_expert = (
+            nn.Sequential(
+                nn.Linear(shared_dim, shared_dim),
+                nn.LayerNorm(shared_dim),
+                nn.SiLU(),
+            )
+            if self.use_residual_expert
+            else None
         )
 
     def _build_membership(self, family_ids):
@@ -158,10 +174,13 @@ class TopoMoE(nn.Module):
 
     def _family_context(self, shared_nodes, prototypes, adjacency, membership, has_anchor):
         centroids = membership @ prototypes
-        residual_centroid = prototypes.mean(dim=0, keepdim=True)
-        has_anchor = has_anchor.unsqueeze(-1)
-        centroids = has_anchor * centroids + (1.0 - has_anchor) * residual_centroid
-        centroids = F.normalize(self._family_topology(adjacency, membership) @ centroids, dim=-1)
+        if self.use_residual_expert:
+            residual_centroid = prototypes.mean(dim=0, keepdim=True)
+            has_anchor = has_anchor.unsqueeze(-1)
+            centroids = has_anchor * centroids + (1.0 - has_anchor) * residual_centroid
+        if self.context_mode == "topology":
+            centroids = self._family_topology(adjacency, membership) @ centroids
+        centroids = F.normalize(centroids, dim=-1)
         return torch.einsum("bnd,fd->bnf", F.normalize(shared_nodes, dim=-1), centroids)
 
     def _topology_losses(self, adjacency):
@@ -224,6 +243,7 @@ class TopoMoE(nn.Module):
         disabled_family_ids=None,
         routing_override=None,
         family_ids_override=None,
+        direct_scores=None,
     ):
         batch, num_nodes, _ = shared_nodes.shape
         family_ids = self.family_ids if family_ids_override is None else family_ids_override.to(shared_nodes.device)
@@ -264,8 +284,13 @@ class TopoMoE(nn.Module):
                 anchor_idx = torch.where(family_ids == family)[0]
                 if anchor_idx.numel() == 0:
                     continue
-                projected = F.normalize(self.family_projections[family](shared_nodes), dim=-1)
-                scores = torch.matmul(projected, refined_prototypes[anchor_idx].t()) / self.temperature
+                if self.score_mode == "direct_residual":
+                    if direct_scores is None:
+                        raise ValueError("direct_residual scoring requires direct_scores")
+                    scores = direct_scores[..., anchor_idx]
+                else:
+                    projected = F.normalize(self.family_projections[family](shared_nodes), dim=-1)
+                    scores = torch.matmul(projected, refined_prototypes[anchor_idx].t()) / self.temperature
                 conditional = F.log_softmax(scores, dim=-1)
                 family_log_probs[..., anchor_idx] = conditional
                 if self.route_mixture == "log_prob":
@@ -278,8 +303,11 @@ class TopoMoE(nn.Module):
             elif self.version == "v1":
                 routed_logits = routed_scores
 
-        residual_gate = routing_weights[..., self.residual_index].unsqueeze(-1)
-        residual_contribution = residual_gate * self.residual_expert(shared_nodes)
+        if self.use_residual_expert:
+            residual_gate = routing_weights[..., self.residual_index].unsqueeze(-1)
+            residual_contribution = residual_gate * self.residual_expert(shared_nodes)
+        else:
+            residual_contribution = torch.zeros_like(shared_nodes)
         sparse_loss = -(routing_weights * torch.log(routing_weights.clamp(min=1e-8))).sum(dim=-1).mean()
 
         if self.version == "v2":
@@ -295,7 +323,11 @@ class TopoMoE(nn.Module):
 
         topo_prior_loss, topo_delta_loss = self._topology_losses(adjacency)
         diagnostics = self.topology_diagnostics(adjacency)
-        diagnostics["residual_usage"] = routing_weights[..., self.residual_index].mean()
+        diagnostics["residual_usage"] = (
+            routing_weights[..., self.residual_index].mean()
+            if self.use_residual_expert
+            else routing_weights.sum() * 0
+        )
 
         output = {
             "routing_weights": routing_weights,

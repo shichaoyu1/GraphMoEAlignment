@@ -48,6 +48,55 @@ def symmetric_vectorize(matrix):
     return values * scale
 
 
+def token_spd_matrices(tokens, adapters, eigenvalue_min=1e-4, token_mask=None):
+    """Build trace-normalized covariance descriptors from padded token sequences."""
+    if tokens.ndim != 5:
+        raise ValueError("tokens must have shape [B, G, M, T, C]")
+    if len(adapters) != tokens.shape[2]:
+        raise ValueError("Adapter count must match the modality dimension")
+    if token_mask is None:
+        token_mask = torch.ones(tokens.shape[:-1], device=tokens.device, dtype=torch.bool)
+    else:
+        if tuple(token_mask.shape) != tuple(tokens.shape[:-1]):
+            raise ValueError("token_mask must have shape [B, G, M, T]")
+        token_mask = token_mask.to(device=tokens.device, dtype=torch.bool)
+
+    matrices = []
+    raw_scales = []
+    raw_traces = []
+    for modality, adapter in enumerate(adapters):
+        values = tokens[:, :, modality]
+        valid = token_mask[:, :, modality].unsqueeze(-1).to(values.dtype)
+        count = valid.sum(dim=-2).clamp(min=1.0)
+        scale_denominator = (count * values.shape[-1]).clamp(min=1.0)
+        raw_scales.append(
+            ((values.square() * valid).sum(dim=(-1, -2)) / scale_denominator.squeeze(-1)).sqrt()
+        )
+        projected = adapter(values)
+        mean = (projected * valid).sum(dim=-2, keepdim=True) / count.unsqueeze(-2)
+        centered = (projected - mean) * valid
+        denominator = (count - 1.0).clamp(min=1.0).unsqueeze(-1)
+        covariance = centered.transpose(-1, -2) @ centered / denominator
+        jitter = torch.diag(
+            torch.linspace(
+                1.0,
+                2.0,
+                covariance.shape[-1],
+                device=tokens.device,
+                dtype=tokens.dtype,
+            )
+        )
+        covariance = _symmetrize(covariance + float(eigenvalue_min) * jitter)
+        covariance, trace = trace_normalize(covariance)
+        matrices.append(covariance)
+        raw_traces.append(trace)
+    return (
+        torch.stack(matrices, dim=2),
+        torch.stack(raw_scales, dim=2),
+        torch.stack(raw_traces, dim=2),
+    )
+
+
 def spd_geodesic(start, end, times, eigenvalue_min=1e-4):
     """Closed-form Log-Euclidean geodesic sampled at ``times``."""
     start_log = spd_logm(start, eigenvalue_min)
@@ -215,6 +264,8 @@ class HierarchicalSPDGraphFusion(nn.Module):
         local_cross_mass=0.35,
         upper_cross_mass=0.40,
         region_family_fraction=0.625,
+        local_topology="learned",
+        upper_topology="learned",
         graph_intervention="none",
     ):
         super().__init__()
@@ -224,6 +275,12 @@ class HierarchicalSPDGraphFusion(nn.Module):
             raise ValueError("SPD paths require at least three samples")
         if graph_policy not in {"legacy_softmax", "cross_budget"}:
             raise ValueError(f"Unsupported SPD graph policy: {graph_policy}")
+        for name, value in {
+            "local_topology": local_topology,
+            "upper_topology": upper_topology,
+        }.items():
+            if value not in {"learned", "identity", "uniform"}:
+                raise ValueError(f"Unsupported {name}: {value}")
         if graph_intervention not in {
             "none", "identity", "uniform", "shuffle", "no_local", "no_upper", "no_region_family"
         }:
@@ -250,6 +307,8 @@ class HierarchicalSPDGraphFusion(nn.Module):
         self.local_cross_mass = float(local_cross_mass)
         self.upper_cross_mass = float(upper_cross_mass)
         self.region_family_fraction = float(region_family_fraction)
+        self.local_topology = local_topology
+        self.upper_topology = upper_topology
         self.graph_intervention = graph_intervention
         self.family_names = list(family_names)
         self.num_families = len(self.family_names)
@@ -281,28 +340,12 @@ class HierarchicalSPDGraphFusion(nn.Module):
             family_prior = torch.eye(max(self.num_families, 1), dtype=torch.float32)
         self.register_buffer("family_prior", torch.as_tensor(family_prior, dtype=torch.float32))
 
-    def _token_spd(self, tokens):
-        matrices = []
-        raw_scales = []
-        raw_traces = []
-        for modality, adapter in enumerate(self.token_adapters):
-            values = tokens[:, :, modality]
-            raw_scales.append(values.square().mean(dim=(-1, -2)).sqrt())
-            projected = adapter(values)
-            centered = projected - projected.mean(dim=-2, keepdim=True)
-            denominator = max(projected.shape[-2] - 1, 1)
-            covariance = centered.transpose(-1, -2) @ centered / float(denominator)
-            jitter = torch.diag(
-                torch.linspace(1.0, 2.0, self.spd_dim, device=tokens.device, dtype=tokens.dtype)
-            )
-            covariance = _symmetrize(covariance + self.eigenvalue_min * jitter)
-            covariance, trace = trace_normalize(covariance)
-            matrices.append(covariance)
-            raw_traces.append(trace)
-        return (
-            torch.stack(matrices, dim=2),
-            torch.stack(raw_scales, dim=2),
-            torch.stack(raw_traces, dim=2),
+    def _token_spd(self, tokens, token_mask=None):
+        return token_spd_matrices(
+            tokens,
+            self.token_adapters,
+            eigenvalue_min=self.eigenvalue_min,
+            token_mask=token_mask,
         )
 
     def _family_spd(self, prototypes):
@@ -355,7 +398,14 @@ class HierarchicalSPDGraphFusion(nn.Module):
         logits[start:, start:] = torch.log(prior + 1e-4)
         return logits
 
-    def forward(self, tokens, anchor_prototypes, modality_mask=None, graph_intervention=None):
+    def forward(
+        self,
+        tokens,
+        anchor_prototypes,
+        modality_mask=None,
+        token_mask=None,
+        graph_intervention=None,
+    ):
         if tokens.ndim != 5:
             raise ValueError("tokens must have shape [B, R, M, T, C]")
         batch, regions, modalities = tokens.shape[:3]
@@ -368,20 +418,31 @@ class HierarchicalSPDGraphFusion(nn.Module):
         if (modality_mask.sum(dim=-1) == 0).any():
             raise ValueError("At least one modality must be available for every case")
 
-        intervention = self.graph_intervention if graph_intervention is None else graph_intervention
+        intervention = graph_intervention
+        if intervention is None:
+            intervention = self.graph_intervention if not self.training else "none"
         if intervention not in {
             "none", "identity", "uniform", "shuffle", "no_local", "no_upper", "no_region_family"
         }:
             raise ValueError(f"Unsupported Paper 4 graph intervention: {intervention}")
 
-        matrices, raw_scales, raw_traces = self._token_spd(tokens)
+        matrices, raw_scales, raw_traces = self._token_spd(tokens, token_mask=token_mask)
         eigenvalues = torch.linalg.eigvalsh(matrices)
         condition_numbers = eigenvalues[..., -1] / eigenvalues[..., 0].clamp(min=self.eigenvalue_min)
         local_representation = self._representation(matrices)
         local_mask = modality_mask[:, None, :].expand(-1, regions, -1)
+        if token_mask is not None:
+            local_mask = local_mask & token_mask.to(device=tokens.device, dtype=torch.bool).any(dim=-1)
+        if (local_mask.sum(dim=-1) == 0).any():
+            raise ValueError("Every group must contain at least one modality with a valid token")
         local_bias = self.local_relation_bias[None, None]
-        local_identity = intervention in {"identity", "no_local"}
-        if self.graph_policy == "legacy_softmax" and not local_identity:
+        local_topology = self.local_topology
+        if intervention in {"identity", "no_local"}:
+            local_topology = "identity"
+        elif intervention == "uniform":
+            local_topology = "uniform"
+        local_identity = local_topology == "identity"
+        if self.graph_policy == "legacy_softmax" and local_topology == "learned":
             local_adjacency, local_distances = _masked_adjacency(
                 local_representation, local_bias, self.local_temperature, local_mask
             )
@@ -396,7 +457,7 @@ class HierarchicalSPDGraphFusion(nn.Module):
                 self.local_temperature,
                 local_mask,
                 self.local_cross_mass,
-                uniform=intervention == "uniform",
+                uniform=local_topology == "uniform",
                 shuffle=intervention == "shuffle",
             )
         local_messages = torch.einsum("brmn,brnij->brmij", local_adjacency, local_representation)
@@ -423,8 +484,13 @@ class HierarchicalSPDGraphFusion(nn.Module):
         upper_mask = torch.ones(batch, node_count, device=tokens.device, dtype=torch.bool)
         upper_bias = self.upper_relation_bias[:node_count, :node_count]
         upper_bias = upper_bias + self._upper_prior_logits(node_count, tokens.device, tokens.dtype)
-        upper_identity = intervention in {"identity", "no_upper"} or not self.use_upper_graph
-        if self.graph_policy == "legacy_softmax" and not upper_identity:
+        upper_topology = self.upper_topology
+        if intervention in {"identity", "no_upper"}:
+            upper_topology = "identity"
+        elif intervention == "uniform":
+            upper_topology = "uniform"
+        upper_identity = upper_topology == "identity" or not self.use_upper_graph
+        if self.graph_policy == "legacy_softmax" and upper_topology == "learned" and not upper_identity:
             upper_adjacency, upper_distances = _masked_adjacency(
                 upper_nodes, upper_bias[None], self.upper_temperature, upper_mask
             )
@@ -441,7 +507,7 @@ class HierarchicalSPDGraphFusion(nn.Module):
                 self.num_regions,
                 self.upper_cross_mass,
                 self.region_family_fraction,
-                uniform=intervention == "uniform",
+                uniform=upper_topology == "uniform",
                 shuffle=intervention == "shuffle",
                 remove_cross_type=intervention == "no_region_family",
             )
@@ -529,15 +595,201 @@ class HierarchicalSPDGraphFusion(nn.Module):
             "diagnostics": diagnostics,
             "graph_intervention": intervention,
             "graph_policy": self.graph_policy,
+            "local_topology": local_topology,
+            "upper_topology": upper_topology,
+        }
+
+
+class SPDMomentGraphFusion(nn.Module):
+    """Task-agnostic SPD fusion for tokenized multimodal benchmarks."""
+
+    def __init__(
+        self,
+        token_dim,
+        shared_dim,
+        num_modalities,
+        spd_dim=16,
+        num_groups=1,
+        num_supports=0,
+        geometry="spd",
+        local_topology="learned",
+        upper_topology="identity",
+        local_cross_mass=0.35,
+        upper_cross_mass=0.40,
+        region_family_fraction=0.625,
+        eigenvalue_min=1e-4,
+        local_temperature=1.0,
+        upper_temperature=1.0,
+    ):
+        super().__init__()
+        if geometry not in {"spd", "euclidean"}:
+            raise ValueError(f"Unsupported manifold geometry: {geometry}")
+        for name, value in {
+            "local_topology": local_topology,
+            "upper_topology": upper_topology,
+        }.items():
+            if value not in {"learned", "identity", "uniform"}:
+                raise ValueError(f"Unsupported {name}: {value}")
+        self.num_modalities = int(num_modalities)
+        self.num_groups = int(num_groups)
+        self.num_supports = int(num_supports)
+        self.spd_dim = int(spd_dim)
+        self.geometry = geometry
+        self.local_topology = local_topology
+        self.upper_topology = upper_topology
+        self.local_cross_mass = float(local_cross_mass)
+        self.upper_cross_mass = float(upper_cross_mass)
+        self.region_family_fraction = float(region_family_fraction)
+        self.eigenvalue_min = float(eigenvalue_min)
+        self.local_temperature = float(local_temperature)
+        self.upper_temperature = float(upper_temperature)
+        self.token_adapters = nn.ModuleList(
+            [nn.Linear(token_dim, self.spd_dim) for _ in range(self.num_modalities)]
+        )
+        self.local_relation_bias = nn.Parameter(
+            torch.zeros(self.num_modalities, self.num_modalities)
+        )
+        upper_count = self.num_groups + self.num_supports
+        self.upper_relation_bias = nn.Parameter(torch.zeros(upper_count, upper_count))
+        vector_dim = self.spd_dim * (self.spd_dim + 1) // 2
+        self.readout = nn.Sequential(
+            nn.Linear(vector_dim, shared_dim),
+            nn.LayerNorm(shared_dim),
+            nn.SiLU(),
+        )
+
+    def _representation(self, matrices):
+        if self.geometry == "spd":
+            return spd_logm(matrices, self.eigenvalue_min)
+        return matrices
+
+    @staticmethod
+    def _resolve_topology(base, override):
+        return base if override is None else override
+
+    def _local_adjacency(self, representation, mask, topology):
+        if topology == "identity":
+            adjacency = _identity_adjacency(mask, representation.dtype)
+            delta = representation.unsqueeze(-3) - representation.unsqueeze(-4)
+            distances = torch.sqrt(delta.square().sum(dim=(-1, -2)) + 1e-12)
+            return adjacency, distances
+        return _cross_budget_adjacency(
+            representation,
+            self.local_relation_bias[None, None],
+            self.local_temperature,
+            mask,
+            self.local_cross_mass,
+            uniform=topology == "uniform",
+        )
+
+    def forward(
+        self,
+        tokens,
+        modality_mask=None,
+        token_mask=None,
+        support_nodes=None,
+        local_topology_override=None,
+        upper_topology_override=None,
+    ):
+        if tokens.ndim != 5:
+            raise ValueError("tokens must have shape [B, G, M, T, C]")
+        batch, groups, modalities = tokens.shape[:3]
+        if groups != self.num_groups or modalities != self.num_modalities:
+            raise ValueError("Unexpected group or modality count")
+        if modality_mask is None:
+            modality_mask = torch.ones(batch, modalities, device=tokens.device, dtype=torch.bool)
+        else:
+            modality_mask = modality_mask.to(device=tokens.device, dtype=torch.bool)
+        matrices, raw_scales, raw_traces = token_spd_matrices(
+            tokens,
+            self.token_adapters,
+            eigenvalue_min=self.eigenvalue_min,
+            token_mask=token_mask,
+        )
+        representation = self._representation(matrices)
+        local_mask = modality_mask[:, None, :].expand(-1, groups, -1)
+        if token_mask is not None:
+            local_mask = local_mask & token_mask.to(device=tokens.device, dtype=torch.bool).any(dim=-1)
+        if (local_mask.sum(dim=-1) == 0).any():
+            raise ValueError("Every group must contain at least one available modality")
+
+        local_topology = self._resolve_topology(self.local_topology, local_topology_override)
+        if local_topology not in {"learned", "identity", "uniform"}:
+            raise ValueError(f"Unsupported local topology override: {local_topology}")
+        local_adjacency, local_distances = self._local_adjacency(
+            representation, local_mask, local_topology
+        )
+        local_messages = torch.einsum("bgmn,bgnij->bgmij", local_adjacency, representation)
+        centrality = local_adjacency.sum(dim=-2) * local_mask.to(local_adjacency.dtype)
+        centrality = centrality / centrality.sum(dim=-1, keepdim=True).clamp(min=1e-8)
+        group_representation = torch.einsum("bgm,bgmij->bgij", centrality, local_messages)
+
+        upper_topology = self._resolve_topology(self.upper_topology, upper_topology_override)
+        if upper_topology not in {"learned", "identity", "uniform"}:
+            raise ValueError(f"Unsupported upper topology override: {upper_topology}")
+        upper_nodes = group_representation
+        if self.num_supports:
+            if support_nodes is None:
+                raise ValueError("support_nodes are required when num_supports is non-zero")
+            if support_nodes.ndim == 3:
+                support_nodes = support_nodes.unsqueeze(0).expand(batch, -1, -1, -1)
+            expected = (batch, self.num_supports, self.spd_dim, self.spd_dim)
+            if tuple(support_nodes.shape) != expected:
+                raise ValueError(f"support_nodes must have shape {expected}")
+            upper_nodes = torch.cat([upper_nodes, self._representation(support_nodes)], dim=1)
+        upper_mask = torch.ones(batch, upper_nodes.shape[1], device=tokens.device, dtype=torch.bool)
+        if upper_topology == "identity" or upper_nodes.shape[1] == 1:
+            upper_adjacency = _identity_adjacency(upper_mask, upper_nodes.dtype)
+            delta = upper_nodes.unsqueeze(-3) - upper_nodes.unsqueeze(-4)
+            upper_distances = torch.sqrt(delta.square().sum(dim=(-1, -2)) + 1e-12)
+            upper_updated = upper_nodes
+        else:
+            upper_adjacency, upper_distances = _typed_cross_budget_adjacency(
+                upper_nodes,
+                self.upper_relation_bias[None],
+                self.upper_temperature,
+                upper_mask,
+                self.num_groups,
+                self.upper_cross_mass,
+                self.region_family_fraction,
+                uniform=upper_topology == "uniform",
+            )
+            upper_updated = torch.einsum("bmn,bnij->bmij", upper_adjacency, upper_nodes)
+        final_groups = upper_updated[:, : self.num_groups]
+        fused = F.normalize(self.readout(symmetric_vectorize(final_groups)), dim=-1)
+        return {
+            "fused_nodes": fused,
+            "local_adjacency": local_adjacency,
+            "upper_adjacency": upper_adjacency,
+            "local_distances": local_distances,
+            "upper_distances": upper_distances,
+            "spd_matrices": matrices,
+            "local_representation": representation,
+            "group_representation": group_representation,
+            "raw_scales": raw_scales,
+            "raw_spd_traces": raw_traces,
+            "local_topology": local_topology,
+            "upper_topology": upper_topology,
+            "diagnostics": {
+                "local_edge_entropy": -(
+                    local_adjacency * torch.log(local_adjacency.clamp(min=1e-8))
+                ).sum(dim=-1).mean(),
+                "local_offdiagonal_mass": (
+                    local_adjacency
+                    * (1.0 - torch.eye(modalities, device=tokens.device, dtype=tokens.dtype))
+                ).sum(dim=-1).mean(),
+            },
         }
 
 
 __all__ = [
     "HierarchicalSPDGraphFusion",
+    "SPDMomentGraphFusion",
     "project_spd",
     "spd_logm",
     "spd_expm",
     "trace_normalize",
     "symmetric_vectorize",
+    "token_spd_matrices",
     "spd_geodesic",
 ]

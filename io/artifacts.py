@@ -16,8 +16,17 @@ def save_patient_level_records(records, out_dir):
         "subject_ids": [record["subject_id"] for record in records["query_records"]],
         "node_names": [record["node_name"] for record in records["query_records"]],
         "query_targets": records["query_targets"],
+        "query_records": records.get("query_records", []),
         "query_vectors": np.nan_to_num(records["query_vectors"], nan=0.0, posinf=0.0, neginf=0.0).tolist(),
         "prototypes": np.nan_to_num(records["prototypes"], nan=0.0, posinf=0.0, neginf=0.0).tolist(),
+        "direct_scores": np.nan_to_num(records.get("direct_scores", []), nan=0.0, posinf=0.0, neginf=0.0).tolist(),
+        "routed_scores": np.nan_to_num(records.get("routed_scores", []), nan=0.0, posinf=0.0, neginf=0.0).tolist(),
+        "family_names": records.get("family_names", []),
+        "family_ids": records.get("family_ids", []),
+        "intervention_scores": {
+            name: np.nan_to_num(values, nan=0.0, posinf=0.0, neginf=0.0).tolist()
+            for name, values in records.get("intervention_scores", {}).items()
+        },
     }
     save_json(os.path.join(out_dir, "patient_level_records.json"), payload)
 

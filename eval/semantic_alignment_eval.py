@@ -30,6 +30,63 @@ from glioma.visualization.topomoe import save_topomoe_figures
 from glioma.visualization.manifold_fusion import save_manifold_figures
 
 
+def _metadata_available(value):
+    return str(value or "").strip().lower() not in {"", "na", "n/a", "none", "nan", "unknown"}
+
+
+def _resolved_eval_seed(args):
+    model_seed = getattr(args, "model_seed", None)
+    return int(getattr(args, "seed", 42) if model_seed is None else model_seed)
+
+
+def _mix_family_routes(routing, family_log_probs, family_ids):
+    routing = np.asarray(routing, dtype=np.float32)
+    family_log_probs = np.asarray(family_log_probs, dtype=np.float32)
+    mixed = np.full_like(family_log_probs, -1e9)
+    for anchor_id, family_id in enumerate(family_ids):
+        mixed[:, anchor_id] = (
+            np.log(np.clip(routing[:, int(family_id)], 1e-8, None))
+            + family_log_probs[:, anchor_id]
+        )
+    return mixed
+
+
+def _dataset_routing_controls(query_records, family_log_probs, family_ids, seed):
+    if not query_records or len(family_log_probs) != len(query_records):
+        return {}
+    routing = np.asarray([record.get("routing_weights", []) for record in query_records], dtype=np.float32)
+    if routing.ndim != 2 or routing.shape[1] == 0:
+        return {}
+    index = {
+        (str(record["subject_id"]), str(record["node_name"])): row
+        for row, record in enumerate(query_records)
+    }
+    subjects = sorted({str(record["subject_id"]) for record in query_records})
+    nodes = sorted({str(record["node_name"]) for record in query_records})
+    rng = np.random.default_rng(int(seed))
+    patient_sources = dict(zip(subjects, rng.permutation(subjects)))
+    node_sources = dict(zip(nodes, rng.permutation(nodes)))
+    patient_shuffled = routing.copy()
+    node_shuffled = routing.copy()
+    for row, record in enumerate(query_records):
+        subject = str(record["subject_id"])
+        node = str(record["node_name"])
+        patient_row = index.get((patient_sources[subject], node))
+        node_row = index.get((subject, node_sources[node]))
+        if patient_row is not None:
+            patient_shuffled[row] = routing[patient_row]
+        if node_row is not None:
+            node_shuffled[row] = routing[node_row]
+    uniform = np.full_like(routing, 1.0 / routing.shape[1])
+    return {
+        "uniform_routing": _mix_family_routes(uniform, family_log_probs, family_ids),
+        "patient_shuffled_routing": _mix_family_routes(
+            patient_shuffled, family_log_probs, family_ids
+        ),
+        "node_shuffled_routing": _mix_family_routes(node_shuffled, family_log_probs, family_ids),
+    }
+
+
 def retrieval_metrics_from_scores(scores, target_ids, gallery_ids=None, ks=(1, 5, 10), subject_ids=None):
     scores = np.asarray(scores, dtype=np.float32)
     if scores.size == 0:
@@ -150,6 +207,7 @@ def build_compact_routing_records(records, anchor_vocab, family_ids, family_name
                 "grade": record.get("grade", "unknown"),
                 "target_ids": [int(anchor_id) for anchor_id in positives],
                 "target_labels": record.get("target_labels", []),
+                "label_availability": record.get("label_availability", {}),
                 "routing_weights": record.get("routing_weights_by_family", {}),
                 "direct_top_k": _top_k_entries(
                     records["direct_scores"][idx], anchor_vocab, positives, family_ids, family_names, top_k
@@ -240,6 +298,8 @@ def _wrong_family_routing(target_ids, family_ids, num_anchor_families, residual_
         positive_families = {int(family_ids[idx]) for idx in positives if int(family_ids[idx]) < num_anchor_families}
         candidates = [family for family in range(num_anchor_families) if family not in positive_families]
         wrong = candidates[0] if candidates else residual_index
+        if wrong is None:
+            wrong = int((min(positive_families) + 1) % num_anchor_families) if positive_families else 0
         override.reshape(-1, shape[-1])[row, wrong] = 1.0
     return override
 
@@ -252,10 +312,13 @@ def _intervention_outputs(model, shared, prototypes, target_ids, seed, node_name
     permutation = _deterministic_permutation(topo.num_anchors, seed + 101, device)
     family_permutation = _deterministic_permutation(topo.num_anchors, seed + 211, device)
     uniform = torch.full_like(effective, 1.0 / topo.num_anchors)
+    baseline = model.route_shared_nodes(shared, prototypes)
+    baseline_routing = baseline["routing_weights"].detach()
+    patient_permutation = _deterministic_permutation(shared.shape[0], seed + 307, device)
+    node_permutation = _deterministic_permutation(shared.shape[1], seed + 401, device)
     scenarios = {
         "remove_pathology_expert": {"disabled_family_ids": [0]},
         "remove_molecular_expert": {"disabled_family_ids": [1]} if topo.num_anchor_families > 1 else {},
-        "remove_residual_branch": {"disabled_family_ids": [topo.residual_index]},
         "shuffle_topology": {"topology_override": effective[permutation][:, permutation]},
         "identity_topology": {"topology_override": torch.eye(topo.num_anchors, device=device)},
         "uniform_topology": {"topology_override": uniform},
@@ -270,7 +333,16 @@ def _intervention_outputs(model, shared, prototypes, target_ids, seed, node_name
             )
         },
         "anchor_family_permutation": {"family_ids_override": family_ids[family_permutation]},
+        "uniform_routing": {"routing_override": torch.ones_like(baseline_routing)},
+        "patient_shuffled_routing": {
+            "routing_override": baseline_routing[patient_permutation]
+        },
+        "node_shuffled_routing": {
+            "routing_override": baseline_routing[:, node_permutation]
+        },
     }
+    if topo.use_residual_expert:
+        scenarios["remove_residual_branch"] = {"disabled_family_ids": [topo.residual_index]}
     for node_idx, node_name in enumerate(node_names):
         masked = shared.clone()
         masked[:, node_idx] = 0
@@ -301,9 +373,15 @@ def collect_alignment_records(
     model.eval()
     bank.eval()
     node_names = node_names_for_mode(args.node_mode)
-    family_ids, family_names = infer_anchor_family_ids(anchor_vocab)
+    topo = getattr(model, "topo_moe", None)
+    include_residual = bool(topo is not None and topo.use_residual_expert)
+    family_ids, family_names = infer_anchor_family_ids(
+        anchor_vocab,
+        include_residual=include_residual,
+    )
     query_vectors, query_targets, query_records = [], [], []
     routed_scores, route_entries, adjacency_mats = [], [], []
+    family_conditionals = []
     intervention_scores = {}
     fusion_adjacencies, fusion_energies, fusion_linear_energies = [], [], []
     fusion_ratios, fusion_deviations = [], []
@@ -349,6 +427,12 @@ def collect_alignment_records(
             if routed is None:
                 routed = output["extras"].get("routed_logits")
             routed_np = np.nan_to_num(routed.detach().cpu().numpy()) if routed is not None else None
+            family_conditional = output["extras"].get("family_log_probs")
+            family_conditional_np = (
+                np.nan_to_num(family_conditional.detach().cpu().numpy())
+                if family_conditional is not None
+                else None
+            )
             adjacency = output["extras"].get("adjacency")
             if adjacency is not None:
                 adjacency_mats.append(np.nan_to_num(adjacency.detach().cpu().numpy()[:remaining]))
@@ -421,7 +505,7 @@ def collect_alignment_records(
                     shared_tensor,
                     prototypes_tensor,
                     batch_targets,
-                    args.seed,
+                    _resolved_eval_seed(args),
                     node_names,
                 )
 
@@ -456,6 +540,8 @@ def collect_alignment_records(
                         )
                     if routed_np is not None:
                         routed_scores.append(routed_np[sample_idx, node_idx])
+                    if family_conditional_np is not None:
+                        family_conditionals.append(family_conditional_np[sample_idx, node_idx])
                     for scenario, scores in batch_interventions.items():
                         intervention_scores.setdefault(scenario, []).append(scores[sample_idx, node_idx])
                     query_vectors.append(vector)
@@ -469,6 +555,16 @@ def collect_alignment_records(
                             "target_labels": [anchor_vocab[idx]["label"] for idx in ids],
                             "routing_weights": weights,
                             "routing_weights_by_family": weights_by_family,
+                            "label_availability": {
+                                "IDH": _metadata_available(metadata.get("IDH", "")),
+                                "MGMT": _metadata_available(metadata.get("MGMT", "")),
+                                "1p19q": _metadata_available(
+                                    metadata.get(
+                                        "1p19Q CODEL",
+                                        metadata.get("1p19q", metadata.get("1p19Q", "")),
+                                    )
+                                ),
+                            },
                         }
                     )
             seen_cases += remaining
@@ -477,6 +573,19 @@ def collect_alignment_records(
     query_vectors = np.asarray(query_vectors, dtype=np.float32)
     direct_scores = score_queries_against_prototypes(query_vectors, prototypes)
     routed_scores = np.asarray(routed_scores, dtype=np.float32) if routed_scores else np.empty((0, len(anchor_vocab)), dtype=np.float32)
+    family_conditionals = (
+        np.asarray(family_conditionals, dtype=np.float32)
+        if family_conditionals
+        else np.empty((0, len(anchor_vocab)), dtype=np.float32)
+    )
+    intervention_scores.update(
+        _dataset_routing_controls(
+            query_records,
+            family_conditionals,
+            family_ids,
+            seed=_resolved_eval_seed(args) + 503,
+        )
+    )
     adjacency = np.concatenate(adjacency_mats).mean(axis=0) if adjacency_mats else None
     records = {
         "query_vectors": query_vectors,
@@ -600,7 +709,9 @@ def intervention_metrics(records):
             subject_ids=records["query_subject_ids"],
         )
         by_family = {}
-        for family_idx, family_name in enumerate(records["family_names"][:-1]):
+        has_residual = bool(records["family_names"] and records["family_names"][-1] == "residual")
+        family_names = records["family_names"][:-1] if has_residual else records["family_names"]
+        for family_idx, family_name in enumerate(family_names):
             indices = [
                 idx
                 for idx, positives in enumerate(records["query_targets"])
@@ -662,7 +773,10 @@ def metrics_from_records(records, anchor_vocab, checkpoint_type=None):
         ]
         by_node[node] = _subset_score_metrics(direct_scores, records, indices)
     by_family = {}
-    for family_index, family_name in enumerate(records.get("family_names", [])[:-1]):
+    metric_family_names = list(records.get("family_names", []))
+    if metric_family_names and metric_family_names[-1] == "residual":
+        metric_family_names = metric_family_names[:-1]
+    for family_index, family_name in enumerate(metric_family_names):
         gallery = [
             index for index, value in enumerate(records.get("family_ids", []))
             if int(value) == family_index
