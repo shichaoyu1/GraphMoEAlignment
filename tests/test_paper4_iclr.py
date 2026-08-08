@@ -8,7 +8,7 @@ import torch
 
 from glioma.cli.aggregate_paper4_diagnostics import aggregate
 from glioma.cli.train_paper4_benchmark import main as train_benchmark
-from glioma.cli.train_semantic_alignment import build_parser, resolve_seeds
+from glioma.cli.train_semantic_alignment import _has_routed_training, build_parser, resolve_seeds
 from glioma.data.paper4_benchmarks import load_npz_splits, make_synthetic_splits
 from glioma.eval.paper4_diagnostics import (
     coadaptation_diagnostics,
@@ -23,6 +23,24 @@ from glioma.modules.hierarchical_spd_fusion import (
 
 
 class Paper4SeedAndTopologyTests(unittest.TestCase):
+    def test_paper4_published_baseline_does_not_enable_topomoe_routing(self):
+        paper4 = build_parser().parse_args(
+            [
+                "--data_root", "unused",
+                "--paper_config", "paper4",
+                "--paper4_fusion_backend", "published_baseline",
+                "--paper4_baseline", "hemis",
+            ]
+        )
+        self.assertFalse(_has_routed_training(paper4))
+
+        topomoe = build_parser().parse_args(
+            ["--data_root", "unused", "--moe_module", "topo_moe", "--topomoe_version", "v2"]
+        )
+        self.assertTrue(_has_routed_training(topomoe))
+        topomoe.routing_enabled = False
+        self.assertFalse(_has_routed_training(topomoe))
+
     def test_legacy_and_explicit_seeds_resolve_independently(self):
         legacy = resolve_seeds(build_parser().parse_args(["--data_root", "unused", "--seed", "7"]))
         self.assertEqual((legacy.split_seed, legacy.model_seed), (7, 7))

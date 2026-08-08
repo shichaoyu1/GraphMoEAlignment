@@ -263,6 +263,14 @@ def _stage_schedule(args, has_routing):
     return [(stage, epochs, lr) for stage, epochs, lr in schedule if epochs > 0]
 
 
+def _has_routed_training(args):
+    return bool(
+        args.moe_module == "topo_moe"
+        and args.topomoe_version == "v2"
+        and getattr(args, "routing_enabled", True)
+    )
+
+
 def main(args=None):
     if args is None:
         args = build_parser().parse_args()
@@ -378,7 +386,7 @@ def main(args=None):
 
     is_paper4 = args.paper_config == "paper4"
     is_v2 = args.moe_module == "topo_moe" and args.topomoe_version == "v2"
-    routing_enabled = bool(getattr(args, "routing_enabled", True))
+    routing_enabled = _has_routed_training(args)
     if is_paper4:
         model = GliomaGeodesicFusionNet(
             z_slices=args.z_slices,
