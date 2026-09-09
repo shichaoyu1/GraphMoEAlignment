@@ -1,0 +1,7 @@
+# Optional general differentiable projection; registered S1/S2 use native analytic projections.
+# Use Python 3.11+ for this optional solver environment (diffcp requires a newer Python).
+# The analytic S1/S2 path also works with the existing Python 3.9 environment.
+cvxpy==1.6.5
+cvxpylayers==0.1.9
+diffcp==1.1.9
+scs==3.3.1

@@ -14,6 +14,7 @@ dist/
 
 # Virtual environments and local configuration
 .venv/
+.venv-authority*/
 venv/
 env/
 .env*
@@ -81,6 +82,7 @@ data/cache/
 *.joblib
 
 # Generated experiments, figures, metrics, and logs
+reports/
 output/
 outputs/
 validation/
