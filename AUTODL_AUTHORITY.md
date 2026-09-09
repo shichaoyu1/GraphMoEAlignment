@@ -30,6 +30,8 @@ bash autodl_authority.sh setup
 
 若已有合适环境，直接 `bash autodl_authority.sh setup`。setup 先检查 Python 与 GPU，再安装已固定版本的其他依赖；不会自动替换 PyTorch。PyTorch 安装选项见[官方说明](https://pytorch.org/get-started/locally/)。
 
+启动器会将 OMP/MKL/OpenBLAS/NumExpr 线程数设为正整数（默认 4，可通过 `AUTHORITY_THREADS` 指定），避免容器继承的错误环境变量。setup 安装后验证依赖导入；start 在提交后台进程之前核对实际解释器、Python 版本、通用投影依赖和 GPU。若缺少 cvxpylayers，应在该解释器对应环境重新执行 setup，不应跳过通用层验收。日志中的 GPU 可用不代表其他依赖已安装。
+
 ## 一条命令后台运行全部实验
 
 ```bash

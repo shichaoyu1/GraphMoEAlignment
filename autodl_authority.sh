@@ -5,14 +5,43 @@ repo="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 action="${1:-help}"
 default_output="${AUTHORITY_OUTPUT:-/root/autodl-tmp/paper4_authority_v1}"
 python_bin="${AUTHORITY_PYTHON:-python}"
+threads="${AUTHORITY_THREADS:-4}"
+if [[ ! "$threads" =~ ^[1-9][0-9]*$ ]]; then
+  echo 'Invalid AUTHORITY_THREADS; using 4.' >&2
+  threads=4
+fi
+# Container images may inherit empty or non-integer OpenMP settings.
+export AUTHORITY_THREADS="$threads" OMP_NUM_THREADS="$threads" MKL_NUM_THREADS="$threads"
+export OPENBLAS_NUM_THREADS="$threads" NUMEXPR_NUM_THREADS="$threads"
 export PYTHONUNBUFFERED=1
 export CUBLAS_WORKSPACE_CONFIG="${CUBLAS_WORKSPACE_CONFIG:-:4096:8}"
 export PYTHONPATH="$(dirname -- "$repo")${PYTHONPATH:+:$PYTHONPATH}"
+
+check_runtime() {
+  "$python_bin" - <<'PY'
+import importlib.util
+import sys
+print("Python:", sys.executable, sys.version.split()[0], flush=True)
+if sys.version_info < (3, 11):
+    raise SystemExit("Activate Python 3.11/3.12, then run: bash autodl_authority.sh setup")
+missing = [name for name in ("torch", "numpy", "scipy", "matplotlib", "pytest", "cvxpy", "cvxpylayers", "diffcp", "scs")
+           if importlib.util.find_spec(name) is None]
+if missing:
+    raise SystemExit("Missing packages in this interpreter: " + ", ".join(missing) +
+                     ". Run: bash autodl_authority.sh setup (in this same environment).")
+import torch
+from cvxpylayers.torch import CvxpyLayer
+if not torch.cuda.is_available():
+    raise SystemExit("CUDA unavailable in this interpreter; install a driver-compatible CUDA PyTorch build.")
+print("GPU:", torch.cuda.get_device_name(0), "Torch:", torch.__version__, flush=True)
+PY
+}
 
 case "$action" in
   setup)
     "$python_bin" -c 'import sys, torch; assert sys.version_info >= (3,11), "Use Python 3.11+"; assert torch.cuda.is_available(), "Install a driver-compatible CUDA PyTorch build first"; print(sys.executable, torch.__version__, torch.cuda.get_device_name(0))'
     "$python_bin" -m pip install -r "$repo/requirements-authority-server.txt"
+    check_runtime
     ;;
   start)
     stage="${2:-all}"
@@ -25,6 +54,8 @@ case "$action" in
     output="$(cd -- "$output" && pwd)"
     exec 9>"$output/.pipeline.lock"
     flock -n 9 || { echo "A pipeline already owns $output. Use status or logs." >&2; exit 1; }
+    # Report missing dependencies before submitting a background process.
+    check_runtime
     export AUTHORITY_PYTHON="$python_bin" AUTHORITY_BACKGROUND=1
     printf 'starting\n' > "$output/pipeline.status"
     nohup bash "$repo/autodl_authority.sh" _run "$stage" "$output" >> "$output/pipeline.log" 2>&1 < /dev/null &

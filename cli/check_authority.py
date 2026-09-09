@@ -21,7 +21,8 @@ def main(argv=None):
     output.mkdir(parents=True, exist_ok=True)
     installed = importlib.util.find_spec("cvxpylayers") is not None
     if not installed and not args.allow_missing_general:
-        parser.error("Install requirements-authority-server.txt in Python 3.11+ to include general solver validation")
+        parser.error(f"cvxpylayers is missing from {sys.executable} (Python {sys.version.split()[0]}). "
+                     "Activate Python 3.11+ and run 'bash autodl_authority.sh setup' in that same environment.")
     env = dict(os.environ)
     env["PYTHONPATH"] = str(root.parent) + os.pathsep + env.get("PYTHONPATH", "")
     env.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
