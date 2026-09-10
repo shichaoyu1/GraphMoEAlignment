@@ -6,6 +6,7 @@ import json
 import os
 import platform
 import random
+import shutil
 import time
 from pathlib import Path
 
@@ -14,7 +15,7 @@ import torch
 import torch.nn.functional as F
 
 from glioma.data.authority_benchmarks import AuthoritySynthetic
-from glioma.eval.authority_diagnostics import evaluate_suite, metrics, predict, synchronize
+from glioma.eval.authority_diagnostics import ARTIFACT_LEVELS, evaluate_suite, metrics, predict, synchronize
 from glioma.models.authority_fusion import AuthorityFusion, TRAINED_VARIANTS, authority_loss
 
 
@@ -56,6 +57,15 @@ def atomic_checkpoint(path, content):
     os.replace(temporary, path)
 
 
+def require_free_space(path, minimum_free_gb):
+    if minimum_free_gb <= 0:
+        return
+    free = shutil.disk_usage(path).free
+    if free < minimum_free_gb * 1024 ** 3:
+        raise OSError(f"Disk guard: {free / 1024**3:.2f} GiB free below required "
+                      f"{minimum_free_gb:g} GiB at {path}")
+
+
 def select_dominant_source(train, validation):
     """Fit equal ridge probes on training data, select source by validation Brier only."""
     scores = []
@@ -83,11 +93,16 @@ def build_model(config, dominant_source=0):
     return AuthorityFusion(**{key: config[key] for key in keys}, dominant_source=dominant_source)
 
 
-def run_training(settings, directory, device="cpu", full_interventions=True, evaluate=True, stop_after=None):
+def run_training(settings, directory, device="cpu", full_interventions=True, evaluate=True, stop_after=None,
+                 artifact_level="summary", checkpoint_retention="all", minimum_free_gb=0):
     """Resume at epoch boundaries, replaying any incomplete epoch with saved RNG state.
 
     stop_after is for interruption tests only and never changes the registered epoch budget.
     """
+    if artifact_level not in ARTIFACT_LEVELS:
+        raise ValueError(f"Unknown artifact level: {artifact_level}; expected one of {ARTIFACT_LEVELS}")
+    if checkpoint_retention not in ("all", "best", "none"):
+        raise ValueError("checkpoint_retention must be all, best, or none")
     os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
     config = dict(DEFAULTS, **settings)
     if min(config[k] for k in ("train_n", "val_n", "test_n", "epochs", "batch_size")) < 1:
@@ -98,6 +113,7 @@ def run_training(settings, directory, device="cpu", full_interventions=True, eva
     config["config_hash"] = canonical_hash({k: v for k, v in config.items() if k != "config_hash"})
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
+    require_free_space(directory, minimum_free_gb)
     config_path = directory / "config.json"
     if config_path.exists():
         previous = json.loads(config_path.read_text(encoding="utf-8"))
@@ -132,7 +148,9 @@ def run_training(settings, directory, device="cpu", full_interventions=True, eva
                        accelerator=torch.cuda.get_device_name(device) if torch.device(device).type == "cuda" else platform.processor(),
                        threads=torch.get_num_threads(), dominant_source=dominant, probe_validation_brier=probe_scores,
                        parameters=sum(p.numel() for p in model.parameters()),
-                       deterministic_algorithms=True, cublas_workspace_config=os.environ.get("CUBLAS_WORKSPACE_CONFIG"))
+                       deterministic_algorithms=True, cublas_workspace_config=os.environ.get("CUBLAS_WORKSPACE_CONFIG"),
+                       artifact_level=artifact_level, checkpoint_retention=checkpoint_retention,
+                       minimum_free_gb=minimum_free_gb)
     atomic_json(directory / "environment.json", environment)
     latest = directory / "last.pt"
     start_epoch, best_brier, best_epoch, history, train_seconds = 0, float("inf"), 0, [], 0.
@@ -150,6 +168,7 @@ def run_training(settings, directory, device="cpu", full_interventions=True, eva
     if torch.device(device).type == "cuda":
         torch.cuda.reset_peak_memory_stats(device)
     for epoch in range(start_epoch, config["epochs"]):
+        require_free_space(directory, minimum_free_gb)
         synchronize(device)
         started = time.perf_counter()
         model.train()
@@ -195,9 +214,15 @@ def run_training(settings, directory, device="cpu", full_interventions=True, eva
                   parameters=environment["parameters"], evaluation="full" if evaluate and full_interventions else "clean" if evaluate else "none")
     if evaluate:
         summaries = evaluate_suite(model, data("test", config["test_n"]), directory / "events", config,
-                                   config["batch_size"], device, full=full_interventions)
+                                   config["batch_size"], device, full=full_interventions,
+                                   artifact_level=artifact_level, minimum_free_gb=minimum_free_gb)
         result["clean"] = summaries["clean"]
+    result.update(artifact_level=artifact_level, checkpoint_retention=checkpoint_retention)
     atomic_json(completion, result)
+    if checkpoint_retention in ("best", "none"):
+        latest.unlink(missing_ok=True)
+    if checkpoint_retention == "none":
+        (directory / "best.pt").unlink(missing_ok=True)
     return result
 
 
@@ -214,13 +239,18 @@ def main(argv=None):
     parser.add_argument("--lr", type=float)
     parser.add_argument("--clean-only", action="store_true")
     parser.add_argument("--no-evaluation", action="store_true", help="Development LR selection: validation only")
+    parser.add_argument("--artifact-level", choices=ARTIFACT_LEVELS, default="summary")
+    parser.add_argument("--checkpoint-retention", choices=("all", "best", "none"), default="none")
+    parser.add_argument("--minimum-free-gb", type=float, default=0)
     args = parser.parse_args(argv)
     torch.set_num_threads(args.threads)
     settings = json.loads(args.config.read_text(encoding="utf-8")) if args.config else {}
     for key in DEFAULTS:
         if getattr(args, key, None) is not None:
             settings[key] = getattr(args, key)
-    result = run_training(settings, args.output, args.device, not args.clean_only, not args.no_evaluation)
+    result = run_training(settings, args.output, args.device, not args.clean_only, not args.no_evaluation,
+                          artifact_level=args.artifact_level, checkpoint_retention=args.checkpoint_retention,
+                          minimum_free_gb=args.minimum_free_gb)
     print(json.dumps(result, indent=2))
 
 

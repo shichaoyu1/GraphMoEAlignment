@@ -16,8 +16,11 @@ case "$phase" in
   aggregate)
     "$authority_python" -m glioma.cli.aggregate_authority "$@"
     ;;
+  prune)
+    "$authority_python" -m glioma.cli.prune_authority_outputs "$@"
+    ;;
   *)
-    echo 'Usage: bash glioma/authority_server.sh {check|plan|smoke|development|freeze|main|attribution|rule-only|aggregate} [options]'
+    echo 'Usage: bash glioma/authority_server.sh {check|plan|smoke|development|freeze|main|attribution|rule-only|aggregate|prune} [options]'
     echo 'Read glioma/PAPER4_AUTHORITY_GUIDE.md for installation, sequential runs and GPU sharding.'
     exit 2
     ;;

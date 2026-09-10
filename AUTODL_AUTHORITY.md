@@ -38,7 +38,16 @@ bash autodl_authority.sh setup
 bash autodl_authority.sh start all
 ```
 
-脚本保存当前解释器绝对路径，后台进程继续使用该环境。默认输出到 `/root/autodl-tmp/paper4_authority_v1`。执行顺序：验收检查 → 60 次开发学习率试验 → 冻结学习率 → 300 次主实验 → 210 次归因实验 → rule-only → 汇总。60 次开发试验不计入正式 510 次训练。
+脚本保存当前解释器绝对路径，后台进程继续使用该环境。summary-only 新协议默认输出到 `/root/autodl-tmp/paper4_authority_v2_summary`，避免与旧版完整产物混跑。执行顺序：验收检查 → 60 次开发学习率试验 → 冻结学习率 → 300 次主实验 → 210 次归因实验 → rule-only → 汇总。60 次开发试验不计入正式 510 次训练。
+
+正式协议默认 `AUTHORITY_ARTIFACT_LEVEL=summary`：每个任务只保存指标汇总，不再为每个干预保存 6000 行 before/after NPZ。完成任务默认删除 `last.pt` 和 `best.pt`；训练中断前仍保留 `last.pt` 用于恢复。默认要求输出盘至少剩余 2 GiB，适用于 15 GiB 数据盘；低于阈值会在下一个 epoch/评估前安全失败。需要审计产物时应使用独立输出目录：
+
+```bash
+AUTHORITY_ARTIFACT_LEVEL=audit AUTHORITY_CHECKPOINT_RETENTION=best \
+  bash autodl_authority.sh start smoke /root/autodl-tmp/authority_audit
+```
+
+可选值为：artifact level `summary|audit|full`，checkpoint retention `none|best|all`。磁盘阈值可通过 `AUTHORITY_MIN_FREE_GB` 修改。
 
 使用 `nohup` 脱离终端，关闭 SSH/JupyterLab 页面后继续运行；`flock` 防止同一输出目录重复启动。AutoDL 的后台与日志机制参见[官方文档](https://api.autodl.com/docs/linux/)。实例关机后计算会停止，重新开机后执行相同命令恢复，不能将后台运行理解为关机后仍运行。
 
@@ -78,6 +87,20 @@ CUDA_VISIBLE_DEVICES=0 bash autodl_authority.sh start all /root/autodl-tmp/autho
 
 运行期间不要 git pull，以免不同任务读取不同版本代码。需要改变模型/协议时应使用新的输出目录，程序会拒绝混用代码指纹。
 
-最终汇总位于输出目录的 `summary_main_attribution_rule_only/RESULTS.md`；逐任务检查点、训练历史及逐样本干预记录分别位于 `development/`、`main/`、`attribution/`、`rule_only/`。详细协议见 [PAPER4_AUTHORITY_GUIDE.md](PAPER4_AUTHORITY_GUIDE.md)。
+最终汇总位于输出目录的 `summary_main_attribution_rule_only/RESULTS.md`；训练历史位于 `development/`、`main/`、`attribution/`、`rule_only/`。检查点和逐样本干预记录只在所选 retention/artifact level 要求时保留。详细协议见 [PAPER4_AUTHORITY_GUIDE.md](PAPER4_AUTHORITY_GUIDE.md)。
+
+旧版完整输出可先做只读预览，再仅清理具有有效 `DONE.json` 且不带运行锁的任务：
+
+```bash
+bash authority_server.sh prune \
+  --root /root/autodl-tmp/paper4_authority_v1 \
+  --completed-only --remove-event-arrays --remove-last-checkpoints
+
+bash authority_server.sh prune \
+  --root /root/autodl-tmp/paper4_authority_v1 \
+  --completed-only --remove-event-arrays --remove-last-checkpoints --apply
+```
+
+第一条命令只是 dry-run；只有第二条带 `--apply` 才会删除列出的可再生成文件。修改后的代码具有新的 source hash，旧 frozen root 不能用于混跑新的训练；正式新运行应换用新的输出根目录。
 
 代码同步到 GitHub；实验输出、模型检查点、虚拟环境和患者数据保留在本机/服务器，不通过 Git 同步。

@@ -3,12 +3,21 @@
 set -euo pipefail
 repo="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 action="${1:-help}"
-default_output="${AUTHORITY_OUTPUT:-/root/autodl-tmp/paper4_authority_v1}"
+default_output="${AUTHORITY_OUTPUT:-/root/autodl-tmp/paper4_authority_v2_summary}"
 python_bin="${AUTHORITY_PYTHON:-python}"
 threads="${AUTHORITY_THREADS:-4}"
+artifact_level="${AUTHORITY_ARTIFACT_LEVEL:-summary}"
+checkpoint_retention="${AUTHORITY_CHECKPOINT_RETENTION:-none}"
+minimum_free_gb="${AUTHORITY_MIN_FREE_GB:-2}"
 if [[ ! "$threads" =~ ^[1-9][0-9]*$ ]]; then
   echo 'Invalid AUTHORITY_THREADS; using 4.' >&2
   threads=4
+fi
+case "$artifact_level" in summary|audit|full) ;; *) echo 'Invalid AUTHORITY_ARTIFACT_LEVEL; expected summary, audit, or full.' >&2; exit 2;; esac
+case "$checkpoint_retention" in all|best|none) ;; *) echo 'Invalid AUTHORITY_CHECKPOINT_RETENTION; expected all, best, or none.' >&2; exit 2;; esac
+if [[ ! "$minimum_free_gb" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+  echo 'Invalid AUTHORITY_MIN_FREE_GB; expected a non-negative number.' >&2
+  exit 2
 fi
 # Container images may inherit empty or non-integer OpenMP settings.
 export AUTHORITY_THREADS="$threads" OMP_NUM_THREADS="$threads" MKL_NUM_THREADS="$threads"
@@ -57,6 +66,8 @@ case "$action" in
     # Report missing dependencies before submitting a background process.
     check_runtime
     export AUTHORITY_PYTHON="$python_bin" AUTHORITY_BACKGROUND=1
+    export AUTHORITY_ARTIFACT_LEVEL="$artifact_level" AUTHORITY_CHECKPOINT_RETENTION="$checkpoint_retention"
+    export AUTHORITY_MIN_FREE_GB="$minimum_free_gb"
     printf 'starting\n' > "$output/pipeline.status"
     nohup bash "$repo/autodl_authority.sh" _run "$stage" "$output" >> "$output/pipeline.log" 2>&1 < /dev/null &
     printf '%s\n' "$!" > "$output/pipeline.pid"
@@ -90,7 +101,10 @@ case "$action" in
     for phase in "${phases[@]}"; do
       printf 'running: %s\n' "$phase" > "$output/pipeline.status"
       echo "[$(date -Is)] phase=$phase"
-      "$python_bin" -m glioma.cli.run_authority_protocol --phase "$phase" --root "$output" --device cuda --threads "${AUTHORITY_THREADS:-4}"
+      "$python_bin" -m glioma.cli.run_authority_protocol --phase "$phase" --root "$output" --device cuda \
+        --threads "${AUTHORITY_THREADS:-4}" --artifact-level "${AUTHORITY_ARTIFACT_LEVEL:-summary}" \
+        --checkpoint-retention "${AUTHORITY_CHECKPOINT_RETENTION:-none}" \
+        --minimum-free-gb "${AUTHORITY_MIN_FREE_GB:-2}"
     done
     if [[ "$stage" == all || "$stage" == smoke ]]; then
       phase=aggregate

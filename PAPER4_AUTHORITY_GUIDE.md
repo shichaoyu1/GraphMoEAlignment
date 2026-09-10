@@ -40,7 +40,7 @@ smoke 固定为 S1/S2 × 四个核心配置，训练/验证/测试 = 1024/256/25
 
 ## 2. 调度、恢复与多 GPU
 
-每个任务保存 best.pt、last.pt、history.json、config.json 和 DONE.json。最优检查点按验证 Brier 选择。恢复使用上一完整 epoch 的模型、优化器与随机数状态；未完成的 epoch 重放。相同代码和配置下，已完成任务会跳过。测试验证过恢复结果与不中断训练逐参数一致。
+训练过程中每个任务保存 best.pt、last.pt、history.json、config.json 和 DONE.json。最优检查点按验证 Brier 选择；正式任务完成并写入 DONE 后按 retention 策略清理检查点，默认两者都不保留。恢复使用上一完整 epoch 的模型、优化器与随机数状态；未完成的 epoch 重放。相同代码和配置下，已完成任务会跳过。测试验证过恢复结果与不中断训练逐参数一致。
 
 `--limit 2` 每次运行本分片尚未完成的两个任务；再次运行继续推进。默认遇到错误停止；`--continue-on-error` 会记录失败并继续，最终仍以非零状态退出。
 
@@ -122,6 +122,8 @@ learned、transformer、graph_only 的相同检查点另报告测试时投影，
 Euclidean 消融保留同一均值增强矩阵及维度，直接使用对称矩阵坐标，去掉矩阵对数几何。主 mask 对照 acf/graph_only/learned_joint 的网络与参数量完全相同；角色置换 mask 用同一网络，同时置换源节点的行列，保留边数与整体入/出度分布。记录逐节点度数，不能声称逐节点度数不变。缺失后的再次裁剪可能改变度数分布，需按相应事件单独解读。其他架构参数量单独记录，不宣称跨 Transformer 参数完全相同。
 
 ## 6. 输出、统计与论文结论
+
+正式 510-run 默认使用 `artifact_level=summary`。逐任务保留 `config.json`、`environment.json`、`history.json`、`DONE.json` 与 `events/summary.json`，不保存逐事件 NPZ；完成后默认删除训练检查点。`audit` 模式把 clean 数组保存一次，并为各干预保存精简 after/delta 数组；`full` 才保留下述完整逐样本格式。审计或调试必须使用独立输出目录，不能与 summary-only 正式根目录混用。
 
 `phase/job/events/*.npz` 为可用 NumPy `allow_pickle=False` 读取的逐样本记录。包含 sample_ids、event_ids、干预前后 p0/p*、实际输出概率、激活关系、B/b、原子约束、状态、保护状态、逐关系变化、逐节点度数、有效性/可用性/质量、目标及前后标签；旁边 JSON 保存种子、规则版本、干预参数、代码/配置标识和平均耗时。NPZ 中前后对应行拥有相同潜在样本。
 

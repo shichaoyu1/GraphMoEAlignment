@@ -12,6 +12,7 @@ import numpy as np
 import torch
 
 from glioma.cli.aggregate_authority import cluster_rows, paired_comparisons
+from glioma.cli.prune_authority_outputs import prune
 from glioma.cli.run_authority_protocol import development_jobs, formal_jobs, freeze_development, load_frozen
 from glioma.cli.train_authority import atomic_json, canonical_hash, run_training, source_hash
 from glioma.data.authority_benchmarks import AuthoritySynthetic, intervention_grid
@@ -155,7 +156,7 @@ class ProtocolTests(unittest.TestCase):
     def test_paired_event_artifacts_and_bypass_positive_control(self):
         with tempfile.TemporaryDirectory() as temp:
             summary = evaluate_suite(AuthorityFusion("s1"), AuthoritySynthetic("s1",split="test",count=6), temp,
-                                     {"data_seed":41,"model_seed":100}, batch_size=3)
+                                     {"data_seed":41,"model_seed":100}, batch_size=3, artifact_level="full")
             self.assertEqual(len(summary), 42)
             self.assertEqual(summary["conflict_strength_8"]["protected_shift_max"], 0.)
             self.assertGreater(summary["bypass"]["protected_shift_max"], 1e-5)
@@ -164,6 +165,59 @@ class ProtocolTests(unittest.TestCase):
                 self.assertEqual(len(saved["event_ids"]),6)
                 self.assertFalse(saved["shift_eligible"].any())
                 self.assertFalse(np.array_equal(saved["labels_before"],saved["labels_after"]))
+
+    def test_summary_and_audit_artifact_levels(self):
+        config = {"data_seed": 41, "model_seed": 100}
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            model = AuthorityFusion("s2")
+            summary = evaluate_suite(model, AuthoritySynthetic("s2", count=3),
+                                     root / "summary", config, artifact_level="summary")
+            self.assertEqual(len(summary), 14)
+            self.assertTrue((root / "summary/summary.json").is_file())
+            self.assertEqual(list((root / "summary").glob("*.npz")), [])
+            audited = evaluate_suite(model, AuthoritySynthetic("s2", count=3),
+                                     root / "audit", config, artifact_level="audit")
+            for event in summary:
+                for metric in summary[event]:
+                    if metric != "inference_ms_per_sample":
+                        self.assertEqual(summary[event][metric], audited[event][metric], (event, metric))
+            self.assertTrue((root / "audit/base.npz").is_file())
+            self.assertTrue((root / "audit/invalid.npz").is_file())
+            with np.load(root / "audit/invalid.npz", allow_pickle=False) as saved:
+                self.assertIn("after_probabilities", saved)
+                self.assertNotIn("before_probabilities", saved)
+
+    def test_completed_checkpoint_retention_and_safe_pruning(self):
+        config = dict(task="s1", variant="acf", train_n=12, val_n=8, test_n=8,
+                      epochs=1, batch_size=8)
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            atomic_json(root / "s0.json", {"test": True})
+            run = root / "main/example"
+            run_training(config, run, evaluate=False, checkpoint_retention="none")
+            self.assertTrue((run / "DONE.json").is_file())
+            self.assertFalse((run / "last.pt").exists())
+            self.assertFalse((run / "best.pt").exists())
+            events = run / "events"
+            events.mkdir()
+            np.savez_compressed(events / "example.npz", value=np.ones(4))
+            preview = prune(root, remove_event_arrays=True)
+            self.assertEqual((preview["mode"], preview["files"]), ("dry-run", 1))
+            self.assertTrue((events / "example.npz").exists())
+            applied = prune(root, remove_event_arrays=True, apply=True)
+            self.assertEqual(applied["mode"], "applied")
+            self.assertFalse((events / "example.npz").exists())
+            np.savez_compressed(events / "locked.npz", value=np.ones(4))
+            (run / "RUNNING.lock").write_text("{}", encoding="utf-8")
+            self.assertEqual(prune(root, remove_event_arrays=True)["files"], 0)
+
+    def test_disk_guard_fails_before_training(self):
+        with tempfile.TemporaryDirectory() as temp:
+            with self.assertRaisesRegex(OSError, "Disk guard"):
+                run_training(dict(train_n=4, val_n=4, test_n=4, epochs=1), Path(temp) / "run",
+                             evaluate=False, minimum_free_gb=10**9)
+            self.assertFalse((Path(temp) / "run/DONE.json").exists())
 
     def test_cluster_unit_is_data_seed_not_events_or_model_runs(self):
         rows = []

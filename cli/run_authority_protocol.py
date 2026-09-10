@@ -9,7 +9,7 @@ import torch
 
 from glioma.cli.train_authority import DEFAULTS, atomic_json, canonical_hash, run_training, source_hash
 from glioma.data.authority_benchmarks import AuthoritySynthetic, s0_check
-from glioma.eval.authority_diagnostics import evaluate_suite
+from glioma.eval.authority_diagnostics import ARTIFACT_LEVELS, evaluate_suite
 from glioma.models.authority_fusion import AuthorityFusion, CORE_VARIANTS, TRAINED_VARIANTS
 
 
@@ -103,7 +103,7 @@ def load_frozen(root):
     return frozen
 
 
-def rule_only_jobs(root, device, shard, shards):
+def rule_only_jobs(root, device, shard, shards, artifact_level="summary", minimum_free_gb=0):
     for index, (task, seed) in enumerate((task, seed) for task in ("s1", "s2") for seed in range(42, 47)):
         if index % shards != shard:
             continue
@@ -118,9 +118,11 @@ def rule_only_jobs(root, device, shard, shards):
         directory.mkdir(parents=True, exist_ok=True)
         atomic_json(directory / "config.json", config)
         summary = evaluate_suite(AuthorityFusion(task, "rule_only").to(device),
-                                  AuthoritySynthetic(task, seed, "test", 6000), directory / "events", config, device=device)
+                                  AuthoritySynthetic(task, seed, "test", 6000), directory / "events", config,
+                                  device=device, artifact_level=artifact_level, minimum_free_gb=minimum_free_gb)
         atomic_json(directory / "DONE.json", dict(config_hash=config["config_hash"], source_hash=source_hash(),
-                                                  clean=summary["clean"], train_seconds=0, parameters=0))
+                                                  clean=summary["clean"], train_seconds=0, parameters=0,
+                                                  artifact_level=artifact_level, checkpoint_retention="none"))
 
 
 def main(argv=None):
@@ -133,6 +135,9 @@ def main(argv=None):
     parser.add_argument("--shards", type=int, default=1)
     parser.add_argument("--limit", type=int, help="Run a prefix of this shard; resume later with the same command")
     parser.add_argument("--continue-on-error", action="store_true")
+    parser.add_argument("--artifact-level", choices=ARTIFACT_LEVELS, default="summary")
+    parser.add_argument("--checkpoint-retention", choices=("all", "best", "none"), default="none")
+    parser.add_argument("--minimum-free-gb", type=float, default=2)
     args = parser.parse_args(argv)
     if not 0 <= args.shard < args.shards:
         parser.error("Need 0 <= shard < shards")
@@ -152,7 +157,7 @@ def main(argv=None):
         return
     if args.phase == "rule-only":
         load_frozen(args.root)
-        rule_only_jobs(args.root, args.device, args.shard, args.shards)
+        rule_only_jobs(args.root, args.device, args.shard, args.shards, args.artifact_level, args.minimum_free_gb)
         return
     if args.phase == "smoke":
         jobs = []
@@ -182,7 +187,9 @@ def main(argv=None):
         except FileExistsError as error:
             raise RuntimeError(f"Job is locked: {lock}. Check the recorded process before removing a stale lock.") from error
         try:
-            run_training(job["config"], directory, args.device, evaluate=args.phase != "development")
+            run_training(job["config"], directory, args.device, evaluate=args.phase != "development",
+                         artifact_level=args.artifact_level, checkpoint_retention=args.checkpoint_retention,
+                         minimum_free_gb=args.minimum_free_gb)
         except Exception as error:
             atomic_json(directory / "FAILED.json", dict(type=type(error).__name__, message=str(error)))
             errors.append(job["id"])

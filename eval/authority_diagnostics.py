@@ -1,6 +1,8 @@
 """Paired authority evaluation. Events are observations, never independent runs."""
 
 import json
+import os
+import shutil
 import time
 from dataclasses import replace
 from pathlib import Path
@@ -11,6 +13,25 @@ import torch
 from glioma.data.authority_benchmarks import intervention_grid
 from glioma.models.authority_fusion import STATUS_NAMES
 from glioma.modules.authority_rules import relation_residuals
+
+
+ARTIFACT_LEVELS = ("summary", "audit", "full")
+
+
+def _atomic_json(path, content):
+    path = Path(path)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(content, indent=2, allow_nan=False), encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def _require_free_space(path, minimum_free_gb):
+    if minimum_free_gb <= 0:
+        return
+    free = shutil.disk_usage(path).free
+    required = int(minimum_free_gb * 1024 ** 3)
+    if free < required:
+        raise OSError(f"Disk guard: {free / 1024**3:.2f} GiB free below required {minimum_free_gb:g} GiB at {path}")
 
 
 def synchronize(device):
@@ -125,11 +146,38 @@ def save_event(path, before, after, base, changed, config, parameters):
     Path(str(path) + ".json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
 
 
-def evaluate_suite(model, generator, directory, config, batch_size=256, device="cpu", full=True):
+def save_audit_base(path, before, base):
+    """Save clean predictions once; intervention files only contain changed outputs."""
+    arrays = {key: before[key] for key in
+              ("p0", "p_star", "probabilities", "status", "protected", "protected_active", "residual", "active")}
+    arrays.update(sample_ids=np.asarray(base.sample_ids), labels=base.labels.numpy(),
+                  target=base.evidence.target_id.numpy())
+    np.savez_compressed(path, **arrays)
+
+
+def save_audit_event(path, before, after, base, changed, include_reference=False):
+    delta, eligible = paired_shift(before, after, base, changed)
+    arrays = {"after_" + key: after[key] for key in
+              ("p0", "p_star", "probabilities", "status", "protected", "protected_active", "residual", "active")}
+    arrays.update(event_ids=np.asarray(changed.event_ids), labels_after=changed.labels.numpy(),
+                  target_after=changed.evidence.target_id.numpy(), protected_shift=delta, shift_eligible=eligible)
+    if include_reference:
+        arrays.update({"reference_" + key: before[key] for key in
+                       ("probabilities", "status", "protected", "protected_active")})
+    np.savez_compressed(path, **arrays)
+
+
+def evaluate_suite(model, generator, directory, config, batch_size=256, device="cpu", full=True,
+                   artifact_level="summary", minimum_free_gb=0):
+    if artifact_level not in ARTIFACT_LEVELS:
+        raise ValueError(f"Unknown artifact level: {artifact_level}; expected one of {ARTIFACT_LEVELS}")
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
+    _require_free_space(directory, minimum_free_gb)
     base = generator.materialize()
     before = predict(model, base, batch_size, device)
+    if artifact_level == "audit":
+        save_audit_base(directory / "base.npz", before, base)
     summary = {}
     events = [("clean", {})] + (intervention_grid(generator.task) if full else [])
     for name, parameters in events:
@@ -159,6 +207,12 @@ def evaluate_suite(model, generator, directory, config, batch_size=256, device="
         if model.variant in ("learned", "transformer", "graph_only"):
             report["posthoc_projection"] = metrics(after, changed, projection=True)
         summary[name] = report
-        save_event(directory / name, reference, after, reference_batch, changed, config, parameters)
-    (directory / "summary.json").write_text(json.dumps(summary, indent=2, allow_nan=False), encoding="utf-8")
+        if artifact_level != "summary":
+            _require_free_space(directory, minimum_free_gb)
+        if artifact_level == "full":
+            save_event(directory / name, reference, after, reference_batch, changed, config, parameters)
+        elif artifact_level == "audit" and name != "clean":
+            save_audit_event(directory / f"{name}.npz", reference, after, reference_batch, changed,
+                             include_reference=name == "bypass")
+    _atomic_json(directory / "summary.json", summary)
     return summary
