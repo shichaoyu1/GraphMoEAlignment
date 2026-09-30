@@ -7,6 +7,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from glioma.modules.idea4_5_path import route_message_gradient
+
 
 def _symmetrize(matrix):
     return 0.5 * (matrix + matrix.transpose(-1, -2))
@@ -620,10 +622,13 @@ class SPDMomentGraphFusion(nn.Module):
         eigenvalue_min=1e-4,
         local_temperature=1.0,
         upper_temperature=1.0,
+        moment_mode="covariance",
     ):
         super().__init__()
         if geometry not in {"spd", "euclidean"}:
             raise ValueError(f"Unsupported manifold geometry: {geometry}")
+        if moment_mode not in {"covariance", "mean_augmented"}:
+            raise ValueError(f"Unsupported moment mode: {moment_mode}")
         for name, value in {
             "local_topology": local_topology,
             "upper_topology": upper_topology,
@@ -635,6 +640,7 @@ class SPDMomentGraphFusion(nn.Module):
         self.num_supports = int(num_supports)
         self.spd_dim = int(spd_dim)
         self.geometry = geometry
+        self.moment_mode = moment_mode
         self.local_topology = local_topology
         self.upper_topology = upper_topology
         self.local_cross_mass = float(local_cross_mass)
@@ -651,7 +657,8 @@ class SPDMomentGraphFusion(nn.Module):
         )
         upper_count = self.num_groups + self.num_supports
         self.upper_relation_bias = nn.Parameter(torch.zeros(upper_count, upper_count))
-        vector_dim = self.spd_dim * (self.spd_dim + 1) // 2
+        matrix_dim = self.spd_dim + (moment_mode == "mean_augmented")
+        vector_dim = matrix_dim * (matrix_dim + 1) // 2
         self.readout = nn.Sequential(
             nn.Linear(vector_dim, shared_dim),
             nn.LayerNorm(shared_dim),
@@ -690,6 +697,7 @@ class SPDMomentGraphFusion(nn.Module):
         support_nodes=None,
         local_topology_override=None,
         upper_topology_override=None,
+        gradient_edge=None,
     ):
         if tokens.ndim != 5:
             raise ValueError("tokens must have shape [B, G, M, T, C]")
@@ -706,6 +714,28 @@ class SPDMomentGraphFusion(nn.Module):
             eigenvalue_min=self.eigenvalue_min,
             token_mask=token_mask,
         )
+        if self.moment_mode == "mean_augmented":
+            valid = (
+                torch.ones(tokens.shape[:-1], device=tokens.device, dtype=torch.bool)
+                if token_mask is None else token_mask.to(device=tokens.device, dtype=torch.bool)
+            )
+            means = []
+            for modality, adapter in enumerate(self.token_adapters):
+                weights = valid[:, :, modality].unsqueeze(-1).to(tokens.dtype)
+                count = weights.sum(dim=-2).clamp(min=1.0)
+                projected = adapter(tokens[:, :, modality])
+                means.append((projected * weights).sum(dim=-2) / count)
+            mean = torch.stack(means, dim=2)
+            top_left = matrices + mean.unsqueeze(-1) @ mean.unsqueeze(-2)
+            top = torch.cat([top_left, mean.unsqueeze(-1)], dim=-1)
+            bottom = torch.cat(
+                [mean.unsqueeze(-2), torch.ones_like(mean[..., :1]).unsqueeze(-1)], dim=-1
+            )
+            matrices = torch.cat([top, bottom], dim=-2)
+            jitter = torch.diag(
+                torch.linspace(1.0, 2.0, matrices.shape[-1], device=tokens.device, dtype=tokens.dtype)
+            )
+            matrices = _symmetrize(matrices + self.eigenvalue_min * jitter)
         representation = self._representation(matrices)
         local_mask = modality_mask[:, None, :].expand(-1, groups, -1)
         if token_mask is not None:
@@ -720,6 +750,9 @@ class SPDMomentGraphFusion(nn.Module):
             representation, local_mask, local_topology
         )
         local_messages = torch.einsum("bgmn,bgnij->bgmij", local_adjacency, representation)
+        local_messages = route_message_gradient(
+            local_messages, local_adjacency, representation, gradient_edge
+        )
         centrality = local_adjacency.sum(dim=-2) * local_mask.to(local_adjacency.dtype)
         centrality = centrality / centrality.sum(dim=-1, keepdim=True).clamp(min=1e-8)
         group_representation = torch.einsum("bgm,bgmij->bgij", centrality, local_messages)
@@ -765,6 +798,8 @@ class SPDMomentGraphFusion(nn.Module):
             "upper_distances": upper_distances,
             "spd_matrices": matrices,
             "local_representation": representation,
+            "local_messages": local_messages,
+            "local_mask": local_mask,
             "group_representation": group_representation,
             "raw_scales": raw_scales,
             "raw_spd_traces": raw_traces,
