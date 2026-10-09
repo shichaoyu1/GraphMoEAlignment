@@ -1,9 +1,14 @@
 """Stable paired observations and group-disjoint roles for Idea4.5 v3."""
 
 import numpy as np
+import torch
 from torch.utils.data import Subset
 
 from glioma.data.paper4_benchmarks import TokenBenchmarkDataset
+from glioma.data.utsw_dataset import (
+    MODALITIES, UTSWROIPatientDataset, get_utsw_cases, parse_utsw_label,
+    patient_cross_validation_split,
+)
 
 
 INFORMATION_CONDITIONS = ("exact_copy", "repeat_measurement", "novel_signal", "null_signal")
@@ -25,6 +30,25 @@ class AvailabilityDataset(TokenBenchmarkDataset):
         return super().__getitem__(index) | {
             "sample_id": str(self.sample_ids[index]),
             "group_id": str(self.group_ids[index]),
+        }
+
+
+class UTSWAvailabilityDataset(UTSWROIPatientDataset):
+    """Raw patient ROIs with stable IDs and complete modality masks."""
+
+    def __init__(self, cases, **kwargs):
+        super().__init__(cases, modalities=MODALITIES, augment=False, **kwargs)
+        self.sample_ids = np.asarray([case["subject_id"] for case in cases]).astype(str)
+        self.group_ids = self.sample_ids.copy()
+        self.labels = torch.as_tensor([case["label"] for case in cases], dtype=torch.long)
+        self.modality_mask = torch.ones(len(cases), len(MODALITIES), dtype=torch.bool)
+
+    def __getitem__(self, index):
+        item = super().__getitem__(index)
+        return item | {
+            "sample_id": str(self.sample_ids[index]),
+            "group_id": str(self.group_ids[index]),
+            "modality_mask": self.modality_mask[index],
         }
 
 
@@ -126,6 +150,48 @@ def load_availability_npz(path, label_mode="class"):
     return splits
 
 
+def make_utsw_availability_splits(
+    data_root,
+    metadata_tsv,
+    task="grade",
+    cv_folds=5,
+    cv_fold=0,
+    cv_seed=2026,
+    roi_size=96,
+    z_slices=7,
+    cache=False,
+):
+    """Build leak-free patient splits directly from the raw UTSW cohort."""
+    cases = []
+    for case in get_utsw_cases(data_root, metadata_tsv=metadata_tsv, require_seg=True):
+        label = parse_utsw_label(case.get("metadata", {}), task)
+        if label is None:
+            continue
+        item = dict(case)
+        item["label"] = int(label)
+        cases.append(item)
+    if len(cases) < max(10, int(cv_folds) * 2):
+        raise ValueError(f"Only {len(cases)} UTSW patients have a usable {task} label")
+    split_cases = patient_cross_validation_split(
+        cases, num_folds=int(cv_folds), fold=int(cv_fold), seed=int(cv_seed)
+    )
+    kwargs = {"roi_size": int(roi_size), "z_slices": int(z_slices), "cache": bool(cache)}
+    splits = {name: UTSWAvailabilityDataset(values, **kwargs) for name, values in split_cases.items()}
+    training_classes = set(splits["train"].labels.tolist())
+    all_classes = set().union(*(set(dataset.labels.tolist()) for dataset in splits.values()))
+    expected_classes = set(range(max(all_classes) + 1))
+    if all_classes != expected_classes:
+        raise ValueError(
+            f"UTSW {task} labels must be contiguous from zero, got {sorted(all_classes)}"
+        )
+    if training_classes != all_classes:
+        raise ValueError(
+            f"UTSW fold {cv_fold} training classes {sorted(training_classes)} do not cover "
+            f"all classes {sorted(all_classes)}"
+        )
+    return splits
+
+
 def partition_training(dataset, split_seed, synthetic=False, audit_size=None):
     """Split training groups into fit/select/measure without object leakage."""
     groups = np.asarray(sorted(set(dataset.group_ids)))
@@ -153,6 +219,7 @@ def partition_training(dataset, split_seed, synthetic=False, audit_size=None):
 
 
 __all__ = [
-    "AvailabilityDataset", "INFORMATION_CONDITIONS", "make_availability_splits",
+    "AvailabilityDataset", "UTSWAvailabilityDataset", "INFORMATION_CONDITIONS",
+    "make_availability_splits", "make_utsw_availability_splits",
     "load_availability_npz", "partition_training",
 ]

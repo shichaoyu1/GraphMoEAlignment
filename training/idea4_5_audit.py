@@ -12,17 +12,35 @@ def masked_view(batch, modalities, device):
     modality_mask = batch["modality_mask"] & allowed
     if not modality_mask.any(dim=-1).all():
         raise ValueError("A requested view has no observed modality")
-    token_mask = batch["token_mask"] & modality_mask[:, None, :, None]
     result = {
-        "tokens": batch["tokens"].to(device),
         "modality_mask": modality_mask.to(device),
-        "token_mask": token_mask.to(device),
         "label": batch["label"].reshape(-1).long().to(device),
     }
+    if "tokens" in batch:
+        token_mask = batch["token_mask"] & modality_mask[:, None, :, None]
+        result.update({"tokens": batch["tokens"].to(device), "token_mask": token_mask.to(device)})
+    elif "images" in batch:
+        result["images"] = batch["images"].to(device)
+        if "region_masks" in batch:
+            result["region_masks"] = batch["region_masks"].to(device)
+    else:
+        raise ValueError("Batch must provide tokens or raw images")
     for key in ("sample_id", "group_id"):
         if key in batch:
             result[key] = list(batch[key])
     return result
+
+
+def forward_view(model, view, gradient_edge=None):
+    if "tokens" in view:
+        return model(
+            view["tokens"], view["modality_mask"], view["token_mask"],
+            gradient_edge=gradient_edge,
+        )
+    return model(
+        view["images"], modality_mask=view["modality_mask"],
+        region_masks=view.get("region_masks"), gradient_edge=gradient_edge,
+    )
 
 
 def brier_values(logits, target):
@@ -35,8 +53,10 @@ def brier_loss(logits, target):
 
 
 def batch_risk_values(model, view):
+    if isinstance(view, (list, tuple)):
+        return torch.cat([batch_risk_values(model, part) for part in view])
     with torch.no_grad():
-        output = model(view["tokens"], view["modality_mask"], view["token_mask"])
+        output = forward_view(model, view)
         return brier_values(output["logits"], view["label"]).detach().cpu()
 
 
@@ -45,7 +65,7 @@ def batch_risk(model, view):
 
 
 def _block_name(name):
-    if name.startswith("classifier"):
+    if name.startswith("classifier") or ".classifier" in name:
         return "classifier"
     if "token_adapters" in name:
         return "adapters"
@@ -54,6 +74,10 @@ def _block_name(name):
     if "relation" in name or "mix" in name:
         return "graph"
     return "other"
+
+
+def _matches_prefix(name, prefix):
+    return name == prefix or name.startswith(f"{prefix}.") or name.startswith(f"availability.{prefix}")
 
 
 def _norms(named_tensors):
@@ -107,13 +131,13 @@ def virtual_update(
     for group in branch_optimizer.param_groups:
         group["lr"] *= float(lr_scale)
     branch_optimizer.zero_grad(set_to_none=True)
-    logits = branch(
-        view["tokens"], view["modality_mask"], view["token_mask"], gradient_edge=gradient_edge
-    )["logits"]
+    logits = forward_view(branch, view, gradient_edge=gradient_edge)["logits"]
     loss = brier_loss(logits, view["label"])
     loss.backward()
     for name, parameter in branch.named_parameters():
-        if parameter.grad is not None and any(name.startswith(prefix) for prefix in zero_parameter_prefixes):
+        if parameter.grad is not None and any(
+            _matches_prefix(name, prefix) for prefix in zero_parameter_prefixes
+        ):
             parameter.grad.zero_()
     if any(parameter.grad is not None and not torch.isfinite(parameter.grad).all()
            for parameter in branch.parameters()):
@@ -173,8 +197,9 @@ def audit_pair(
         name: masked_view(update_batch, modalities, device)
         for name, modalities in (("rich", rich), ("sparse", sparse))
     }
+    measure_batches = measure_batch if isinstance(measure_batch, (list, tuple)) else [measure_batch]
     measured = {
-        name: masked_view(measure_batch, modalities, device)
+        name: [masked_view(batch, modalities, device) for batch in measure_batches]
         for name, modalities in (("rich", rich), ("sparse", sparse))
     }
     was_training = model.training
@@ -248,12 +273,14 @@ def audit_pair(
             "measure_forward_passes": 28 if audit_optimizer == "stateful" else 26,
         },
         "source_sample_ids": views["rich"].get("sample_id", []),
-        "measure_sample_ids": measured["rich"].get("sample_id", []),
+        "measure_sample_ids": [
+            sample_id for part in measured["rich"] for sample_id in part.get("sample_id", [])
+        ],
         "per_object": per_object,
     }
 
 
 __all__ = [
-    "masked_view", "brier_values", "brier_loss", "batch_risk_values", "batch_risk",
+    "masked_view", "forward_view", "brier_values", "brier_loss", "batch_risk_values", "batch_risk",
     "virtual_update", "optimizer_background", "audit_pair",
 ]

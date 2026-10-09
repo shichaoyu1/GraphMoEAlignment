@@ -26,7 +26,7 @@ For the complete configuration, artifact protocol, ablations, and server command
 
 ## Idea4.5: availability-context training interference
 
-Idea4.5 studies how updates from one observed modality combination affect another combination, using paired virtual updates and directed graph-gradient interventions. The active [v3 experimental design](IDEA4_5_PROTOCOL_V3.md), [design audit](IDEA4_5_DESIGN_AUDIT.md), and [server guide](IDEA4_5_GUIDE.md) define the confirmatory E0–E2 workflow. The historical [research note](IDEA4_5_RESEARCH.md) and [v2 protocol](IDEA4_5_PROTOCOL.md) retain the earlier context. Run `bash glioma/start_server_idea4_5.sh pilot` before freezing and launching the full confirmation grid.
+Idea4.5 studies how updates from one observed modality combination affect another combination, using paired virtual updates and directed graph-gradient interventions. The active [v3 experimental design](IDEA4_5_PROTOCOL_V3.md), [design audit](IDEA4_5_DESIGN_AUDIT.md), and [server guide](IDEA4_5_GUIDE.md) define the confirmatory E0–E2 workflow. The historical [research note](IDEA4_5_RESEARCH.md) and [v2 protocol](IDEA4_5_PROTOCOL.md) retain the earlier context. Run `bash glioma/start_server_idea4_5.sh pilot` for the synthetic pilot, or `bash glioma/start_server_idea4_5.sh utsw-test` to validate the configured raw UTSW paths before the five-fold UTSW run.
 
 ## Full Paper 2 server run
 

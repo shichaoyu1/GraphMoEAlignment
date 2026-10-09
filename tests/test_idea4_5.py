@@ -4,8 +4,8 @@ import unittest
 import torch
 
 from glioma.data.idea4_5 import make_availability_splits, partition_training
-from glioma.models.idea4_5 import Idea45AvailabilityModel
-from glioma.training.idea4_5_audit import audit_pair, brier_loss, masked_view
+from glioma.models.idea4_5 import Idea45AvailabilityModel, Idea45UTSWModel
+from glioma.training.idea4_5_audit import audit_pair, brier_loss, masked_view, virtual_update
 
 
 class AvailabilityAuditTests(unittest.TestCase):
@@ -133,6 +133,53 @@ class AvailabilityAuditTests(unittest.TestCase):
             self.assertEqual(branch["clip_scale"], 1.0)
             self.assertIn("all", branch["gradient_norms"])
             self.assertIn("all", branch["displacement_norms"])
+
+    def test_raw_utsw_pooled_encoder_supports_paired_views(self):
+        model = Idea45UTSWModel(
+            z_slices=3, num_modalities=4, num_classes=3, roi_size=32,
+            encoder_mode="pooled", token_grid=4, shared_dim=8, spd_dim=3,
+            geometry="euclidean", local_topology="uniform", readout_mode="nodewise",
+        ).eval()
+        batch = {
+            "images": torch.randn(2, 4, 3, 32, 32),
+            "region_masks": torch.ones(2, 3, 3, 32, 32),
+            "modality_mask": torch.ones(2, 4, dtype=torch.bool),
+            "label": torch.tensor([0, 2]),
+            "sample_id": ["a", "b"], "group_id": ["a", "b"],
+        }
+        rich = masked_view(batch, (0, 1, 2, 3), torch.device("cpu"))
+        sparse = masked_view(batch, (0, 1), torch.device("cpu"))
+        rich_logits = model(rich["images"], modality_mask=rich["modality_mask"])["logits"]
+        sparse_logits = model(sparse["images"], modality_mask=sparse["modality_mask"])["logits"]
+        blocked = model(
+            sparse["images"], modality_mask=sparse["modality_mask"], gradient_edge=(0, 1, 0.0)
+        )["logits"]
+        self.assertEqual(tuple(rich_logits.shape), (2, 3))
+        self.assertEqual(tuple(sparse_logits.shape), (2, 3))
+        torch.testing.assert_close(sparse_logits, blocked, rtol=0, atol=1e-7)
+
+    def test_raw_utsw_parameter_controls_reach_wrapped_backbone(self):
+        model = Idea45UTSWModel(
+            z_slices=3, num_modalities=4, num_classes=3, roi_size=16,
+            encoder_mode="pooled", token_grid=2, shared_dim=8, spd_dim=3,
+            geometry="euclidean", local_topology="uniform", readout_mode="nodewise",
+        )
+        optimizer = torch.optim.SGD(model.parameters(), lr=1e-3)
+        batch = {
+            "images": torch.randn(2, 4, 3, 16, 16),
+            "modality_mask": torch.ones(2, 4, dtype=torch.bool),
+            "label": torch.tensor([0, 2]),
+        }
+        view = masked_view(batch, (0, 1, 2, 3), torch.device("cpu"))
+        _, baseline = virtual_update(
+            model, optimizer, view, audit_optimizer="mechanism_sgd", clip_norm=None,
+        )
+        _, controlled = virtual_update(
+            model, optimizer, view, audit_optimizer="mechanism_sgd",
+            zero_parameter_prefixes=("classifier",), clip_norm=None,
+        )
+        self.assertGreater(baseline["displacement_norms"]["classifier"], 0.0)
+        self.assertEqual(controlled["displacement_norms"]["classifier"], 0.0)
 
 
 if __name__ == "__main__":

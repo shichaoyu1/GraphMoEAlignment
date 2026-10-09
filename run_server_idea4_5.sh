@@ -18,6 +18,16 @@ FULL_EDGE_NORMALIZATIONS="${FULL_EDGE_NORMALIZATIONS:-dynamic fixed}"
 RUN_ARCH_CONTROLS="${RUN_ARCH_CONTROLS:-1}"
 DATA_PATH="${DATA_PATH:-}"
 LABEL_MODE="${LABEL_MODE:-sign}"
+DATA_ROOT="${DATA_ROOT:-/root/autodl-tmp/dataset/UTSW-Glioma}"
+METADATA_TSV="${METADATA_TSV:-/root/autodl-tmp/dataset/UTSW_Glioma_Metadata-2-1.tsv}"
+UTSW_TASK="${UTSW_TASK:-grade}"
+UTSW_CV_FOLDS="${UTSW_CV_FOLDS:-5}"
+UTSW_FOLD_IDS="${UTSW_FOLD_IDS:-0 1 2 3 4}"
+UTSW_BATCH_SIZE="${UTSW_BATCH_SIZE:-4}"
+UTSW_MEASURE_BATCH_SIZE="${UTSW_MEASURE_BATCH_SIZE:-4}"
+UTSW_AUDIT_BATCH_SIZE="${UTSW_AUDIT_BATCH_SIZE:-4}"
+UTSW_AUDIT_SOURCE_BATCHES="${UTSW_AUDIT_SOURCE_BATCHES:-5}"
+UTSW_EPOCHS="${UTSW_EPOCHS:-30}"
 
 cd "$WORKSPACE_ROOT"
 export PYTHONPATH="$WORKSPACE_ROOT${PYTHONPATH:+:$PYTHONPATH}"
@@ -43,17 +53,18 @@ fi
 
 PLAN="$OUTPUT_ROOT/run_plan.tsv"
 FAILURES="$OUTPUT_ROOT/failed_runs.tsv"
-printf 'condition\trich_fraction\tdata_seed\ttrain_seed\tedge_normalization\ttopology\treadout\tout_dir\n' > "$PLAN"
+printf 'dataset\tcondition\trich_fraction\tdata_seed_or_fold\ttrain_seed\tedge_normalization\ttopology\treadout\tout_dir\n' > "$PLAN"
 printf 'out_dir\texit_code\n' > "$FAILURES"
 failure_count=0
 
 run_one() {
   local condition="$1" fraction="$2" data_seed="$3" train_seed="$4" normalization="$5" dataset="$6"
   local topology="$7" readout="$8"
+  local cv_fold="${9:-0}"
   local run_name="${condition}_rich_${fraction}_${normalization}_${topology}_${readout}/data_${data_seed}_train_${train_seed}"
   local out_dir="$OUTPUT_ROOT/runs/$run_name"
-  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "$condition" "$fraction" "$data_seed" "$train_seed" "$normalization" \
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$dataset" "$condition" "$fraction" "$data_seed" "$train_seed" "$normalization" \
     "$topology" "$readout" "$out_dir" >> "$PLAN"
   if [[ -f "$out_dir/run_summary.json" ]]; then
     printf '[SKIP completed] %s\n' "$run_name"
@@ -72,8 +83,19 @@ run_one() {
   )
   if [[ "$dataset" == "synthetic" ]]; then
     cmd+=(--information_condition "$condition" --signal_form mean --num_samples "$NUM_SAMPLES")
-  else
+  elif [[ "$dataset" == "npz" ]]; then
     cmd+=(--data_path "$DATA_PATH" --label_mode "$LABEL_MODE")
+  else
+    cmd+=(
+      --information_condition observed
+      --data_root "$DATA_ROOT" --metadata_tsv "$METADATA_TSV"
+      --utsw_task "$UTSW_TASK" --cv_folds "$UTSW_CV_FOLDS" --cv_fold "$cv_fold"
+      --epochs "$UTSW_EPOCHS" --batch_size "$UTSW_BATCH_SIZE"
+      --audit_source_batches "$UTSW_AUDIT_SOURCE_BATCHES"
+      --audit_batch_size "$UTSW_AUDIT_BATCH_SIZE"
+      --measure_batch_size "$UTSW_MEASURE_BATCH_SIZE"
+      --utsw_encoder pooled
+    )
   fi
   printf '[RUN] %s\n' "$run_name"
   if "${cmd[@]}" > "$out_dir/stdout.log" 2>&1; then
@@ -122,8 +144,33 @@ elif [[ "$MODE" == "public" ]]; then
       run_one observed 0.8 0 "$train_seed" "$normalization" npz uniform nodewise
     done
   done
+elif [[ "$MODE" == "utsw-test" ]]; then
+  if [[ ! -d "$DATA_ROOT" || ! -f "$METADATA_TSV" ]]; then
+    printf 'UTSW paths not found: %s ; %s\n' "$DATA_ROOT" "$METADATA_TSV" >&2
+    exit 2
+  fi
+  UTSW_EPOCHS=2
+  UTSW_AUDIT_SOURCE_BATCHES=1
+  run_one "utsw_${UTSW_TASK}" 0.8 0 101 dynamic utsw uniform nodewise 0
+elif [[ "$MODE" == "utsw" ]]; then
+  if [[ ! -d "$DATA_ROOT" || ! -f "$METADATA_TSV" ]]; then
+    printf 'UTSW paths not found: %s ; %s\n' "$DATA_ROOT" "$METADATA_TSV" >&2
+    exit 2
+  fi
+  for cv_fold in $UTSW_FOLD_IDS; do
+    for train_seed in $TRAIN_SEEDS; do
+      for normalization in $FULL_EDGE_NORMALIZATIONS; do
+        run_one "utsw_${UTSW_TASK}" 0.5 "$cv_fold" "$train_seed" "$normalization" utsw uniform nodewise "$cv_fold"
+        run_one "utsw_${UTSW_TASK}" 0.8 "$cv_fold" "$train_seed" "$normalization" utsw uniform nodewise "$cv_fold"
+      done
+      if [[ "$RUN_ARCH_CONTROLS" == "1" ]]; then
+        run_one "utsw_${UTSW_TASK}" 0.8 "$cv_fold" "$train_seed" dynamic utsw identity nodewise "$cv_fold"
+        run_one "utsw_${UTSW_TASK}" 0.8 "$cv_fold" "$train_seed" dynamic utsw uniform pooled "$cv_fold"
+      fi
+    done
+  done
 else
-  printf 'Usage: %s {test|pilot|full|public}\n' "$0" >&2
+  printf 'Usage: %s {test|pilot|full|public|utsw-test|utsw}\n' "$0" >&2
   exit 2
 fi
 

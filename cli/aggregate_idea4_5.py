@@ -13,7 +13,7 @@ from glioma.io.artifacts import save_json
 METRICS = ("delta_abs_rich_to_sparse", "delta_rel_rich_vs_sparse", "A_r", "A_s", "J")
 GROUP_FIELDS = (
     "dataset", "information_condition", "signal_form", "rich_fraction", "geometry",
-    "local_topology", "edge_normalization", "readout_mode", "training_optimizer",
+    "local_topology", "edge_normalization", "readout_mode", "training_optimizer", "utsw_task",
 )
 
 
@@ -62,9 +62,12 @@ def main(argv=None):
         summary, config = item["summary"], item["summary"]["config"]
         for audit_optimizer, metrics in summary["audit_means"].items():
             row = {field: config.get(field) for field in GROUP_FIELDS}
+            cluster_unit = "cv_fold" if config["dataset"] == "utsw" else "data_seed"
+            cluster_id = int(config[cluster_unit])
             row.update({
                 "audit_optimizer": audit_optimizer,
                 "data_seed": int(config["data_seed"]), "train_seed": int(config["train_seed"]),
+                "cluster_unit": cluster_unit, "cluster_id": cluster_id,
                 "path": item["path"], **{metric: float(metrics[metric]) for metric in METRICS},
                 "test_sparse_brier": float(summary["test"]["sparse"]["brier"]),
                 "test_rich_brier": float(summary["test"]["rich"]["brier"]),
@@ -80,9 +83,17 @@ def main(argv=None):
         # Training seeds are repeated measurements inside an independent data seed.
         data_clusters = {}
         for row in group:
-            data_clusters.setdefault(row["data_seed"], []).append(row)
+            data_clusters.setdefault(row["cluster_id"], []).append(row)
         record = dict(zip(GROUP_FIELDS + ("audit_optimizer",), key))
-        record.update({"n_data_seeds": len(data_clusters), "n_runs": len(group)})
+        record.update({
+            "cluster_unit": group[0]["cluster_unit"],
+            "n_clusters": len(data_clusters), "n_runs": len(group),
+            "inference_scope": (
+                "descriptive patient-CV fold variability within one cohort"
+                if group[0]["cluster_unit"] == "cv_fold"
+                else "independent synthetic data seeds"
+            ),
+        })
         for metric in METRICS + ("test_sparse_brier", "test_rich_brier"):
             cluster_values = [np.mean([row[metric] for row in cluster]) for cluster in data_clusters.values()]
             mean, low, high = _interval(cluster_values, args.bootstrap, rng)
@@ -100,8 +111,8 @@ def main(argv=None):
     completed = sum(item["status"] == "completed" for item in inventory)
     save_json(os.path.join(out_dir, "summary.json"), {
         "completed_runs": completed, "noncompleted_runs": len(inventory) - completed,
-        "groups": len(aggregates), "independent_unit": "data_seed",
-        "train_seed_handling": "averaged within data_seed before bootstrap",
+        "groups": len(aggregates),
+        "train_seed_handling": "averaged within the registered cluster before bootstrap",
     })
     return aggregates
 

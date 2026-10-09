@@ -11,21 +11,36 @@ import torch
 from torch.utils.data import DataLoader, default_collate
 
 from glioma.data.idea4_5 import (
-    INFORMATION_CONDITIONS, load_availability_npz, make_availability_splits, partition_training,
+    INFORMATION_CONDITIONS, load_availability_npz, make_availability_splits,
+    make_utsw_availability_splits, partition_training,
 )
 from glioma.io.artifacts import save_json
-from glioma.models.idea4_5 import Idea45AvailabilityModel
-from glioma.training.idea4_5_audit import audit_pair, brier_loss, masked_view
+from glioma.models.idea4_5 import Idea45AvailabilityModel, Idea45UTSWModel
+from glioma.training.idea4_5_audit import audit_pair, brier_loss, forward_view, masked_view
 from glioma.training.engine import set_seed
 
 
 def build_parser():
     parser = argparse.ArgumentParser(description="Idea4.5 v3 paired availability audit")
-    parser.add_argument("--dataset", choices=["synthetic", "npz"], default="synthetic")
+    parser.add_argument("--dataset", choices=["synthetic", "npz", "utsw"], default="synthetic")
     parser.add_argument("--data_path")
+    parser.add_argument("--data_root")
+    parser.add_argument("--metadata_tsv")
+    parser.add_argument("--utsw_task", choices=["grade", "idh", "mgmt", "1p19q"], default="grade")
+    parser.add_argument("--cv_folds", type=int, default=5)
+    parser.add_argument("--cv_fold", type=int, default=0)
+    parser.add_argument("--cv_seed", type=int, default=2026)
+    parser.add_argument("--roi_size", type=int, default=96)
+    parser.add_argument("--z_slices", type=int, default=7)
+    parser.add_argument("--utsw_encoder", choices=["pooled", "cnn"], default="pooled")
+    parser.add_argument("--utsw_token_grid", type=int, default=8)
+    parser.add_argument("--cache", action="store_true")
     parser.add_argument("--label_mode", choices=["class", "sign", "sign_nozero"], default="class")
     parser.add_argument("--out_dir", required=True)
-    parser.add_argument("--information_condition", choices=INFORMATION_CONDITIONS, default="novel_signal")
+    parser.add_argument(
+        "--information_condition", choices=INFORMATION_CONDITIONS + ("observed",),
+        default="novel_signal",
+    )
     parser.add_argument("--extra_information", choices=["unique", "redundant"], help=argparse.SUPPRESS)
     parser.add_argument("--signal_form", choices=["mean", "covariance"], default="mean")
     parser.add_argument("--num_samples", type=int, default=6000)
@@ -47,6 +62,7 @@ def build_parser():
     parser.add_argument("--audit_size", type=int, help="Compatibility override for singleton groups")
     parser.add_argument("--audit_source_batches", type=int, default=20)
     parser.add_argument("--audit_batch_size", type=int, default=64)
+    parser.add_argument("--measure_batch_size", type=int, default=128)
     parser.add_argument("--audit_checkpoints", type=float, nargs="+", default=[0.1, 0.5, 0.9])
     parser.add_argument("--audit_optimizers", choices=["mechanism_sgd", "stateful"], nargs="+",
                         default=["mechanism_sgd", "stateful"])
@@ -69,8 +85,11 @@ def build_parser():
 
 def _complete(dataset, modalities):
     observed = dataset.modality_mask[:, list(modalities)].all(dim=-1)
-    tokens = (dataset.token_mask[:, :, list(modalities)].sum(dim=-1) >= 2).all(dim=-1).all(dim=-1)
-    if not bool((observed & tokens).all()):
+    valid = observed
+    if hasattr(dataset, "token_mask"):
+        tokens = (dataset.token_mask[:, :, list(modalities)].sum(dim=-1) >= 2).all(dim=-1).all(dim=-1)
+        valid = observed & tokens
+    if not bool(valid.all()):
         raise ValueError("Paired protocol requires every rich-view modality and at least two valid tokens")
 
 
@@ -80,15 +99,15 @@ def _evaluate(model, dataset, modalities, batch_size, device):
     for batch in DataLoader(dataset, batch_size=batch_size):
         view = masked_view(batch, modalities, device)
         with torch.no_grad():
-            logits = model(view["tokens"], view["modality_mask"], view["token_mask"])["logits"]
+            logits = forward_view(model, view)["logits"]
             loss_sum += float(brier_loss(logits, view["label"]).cpu()) * len(view["label"])
             correct += int((logits.argmax(dim=-1) == view["label"]).sum())
         count += len(view["label"])
     return {"brier": loss_sum / count, "accuracy": correct / count, "n": count}
 
 
-def _full_batch(dataset):
-    return default_collate([dataset[index] for index in range(len(dataset))])
+def _measure_batches(dataset, batch_size):
+    return list(DataLoader(dataset, batch_size=batch_size, shuffle=False))
 
 
 def _audit_batches(dataset, count, batch_size, rng):
@@ -129,7 +148,8 @@ def _source_hashes():
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     paths = (
         "cli/idea4_5.py", "cli/aggregate_idea4_5.py", "data/idea4_5.py",
-        "models/idea4_5.py", "training/idea4_5_audit.py", "modules/idea4_5_path.py",
+        "data/utsw_dataset.py", "models/encoders.py", "models/idea4_5.py",
+        "training/idea4_5_audit.py", "modules/idea4_5_path.py",
     )
     result = {}
     for relative in paths:
@@ -141,12 +161,14 @@ def _source_hashes():
 def _validate(args):
     if args.dataset == "npz" and not args.data_path:
         raise ValueError("--data_path is required for NPZ input")
-    if args.dataset == "synthetic" and args.label_mode != "class":
-        raise ValueError("Synthetic labels already use the registered binary class task")
+    if args.dataset == "utsw" and (not args.data_root or not args.metadata_tsv):
+        raise ValueError("--data_root and --metadata_tsv are required for UTSW input")
+    if args.dataset in {"synthetic", "utsw"} and args.label_mode != "class":
+        raise ValueError("Synthetic and UTSW datasets already provide registered class labels")
     if not 0 <= args.rich_fraction <= 1 or args.epochs < 1:
         raise ValueError("rich_fraction must be in [0,1] and epochs positive")
-    if args.audit_source_batches < 1 or args.audit_batch_size < 1:
-        raise ValueError("Audit batch counts and sizes must be positive")
+    if args.audit_source_batches < 1 or args.audit_batch_size < 1 or args.measure_batch_size < 1:
+        raise ValueError("Audit and measure batch counts and sizes must be positive")
     if args.edge_normalization == "fixed" and args.local_topology == "learned":
         raise ValueError("Fixed edge normalization requires uniform or identity topology")
 
@@ -170,10 +192,19 @@ def main(argv=None):
             args.num_samples, args.token_count, args.token_dim, args.information_condition,
             args.signal_form, data_seed=args.data_seed, split_seed=args.split_seed,
         )
-    else:
+    elif args.dataset == "npz":
         splits = load_availability_npz(args.data_path, args.label_mode)
+    else:
+        splits = make_utsw_availability_splits(
+            args.data_root, args.metadata_tsv, task=args.utsw_task,
+            cv_folds=args.cv_folds, cv_fold=args.cv_fold, cv_seed=args.cv_seed,
+            roi_size=args.roi_size, z_slices=args.z_slices, cache=args.cache,
+        )
     train = splits["train"]
-    _, groups, modalities, _, token_dim = train.tokens.shape
+    if args.dataset == "utsw":
+        groups, modalities, token_dim = 1, train.modality_mask.shape[-1], None
+    else:
+        _, groups, modalities, _, token_dim = train.tokens.shape
     if groups != 1:
         raise ValueError("Idea4.5 v3 expects one fusion group")
     sparse, rich = tuple(args.sparse_modalities), tuple(range(modalities))
@@ -191,13 +222,22 @@ def main(argv=None):
         raise ValueError("audit_batch_size exceeds fit role")
 
     labels = set(train.labels.reshape(-1).tolist())
-    num_classes = len(labels)
+    if labels != set(range(max(labels) + 1)):
+        raise ValueError(f"Class labels must be contiguous from zero, got {sorted(labels)}")
+    num_classes = max(labels) + 1
     device = torch.device("cpu" if args.cpu or not torch.cuda.is_available() else "cuda")
-    model = Idea45AvailabilityModel(
-        token_dim, modalities, num_classes, shared_dim=args.shared_dim, spd_dim=args.spd_dim,
-        geometry=args.geometry, local_topology=args.local_topology, moment_mode=args.moment_mode,
+    model_kwargs = dict(
+        shared_dim=args.shared_dim, spd_dim=args.spd_dim, geometry=args.geometry,
+        local_topology=args.local_topology, moment_mode=args.moment_mode,
         readout_mode=args.readout_mode, edge_normalization=args.edge_normalization,
-    ).to(device)
+    )
+    if args.dataset == "utsw":
+        model = Idea45UTSWModel(
+            args.z_slices, modalities, num_classes, roi_size=args.roi_size,
+            encoder_mode=args.utsw_encoder, token_grid=args.utsw_token_grid, **model_kwargs
+        ).to(device)
+    else:
+        model = Idea45AvailabilityModel(token_dim, modalities, num_classes, **model_kwargs).to(device)
     if args.training_optimizer == "adamw":
         optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     else:
@@ -220,7 +260,7 @@ def main(argv=None):
     })
     save_json(os.path.join(args.out_dir, "run_status.json"), {"status": "running", "started": time.time()})
 
-    measure_batch = _full_batch(roles["measure"])
+    measure_batch = _measure_batches(roles["measure"], args.measure_batch_size)
     checkpoints = _checkpoint_epochs(args.epochs, args.audit_checkpoints)
     audit_rng = np.random.default_rng(args.audit_seed)
     history, audits, training_steps = [], [], 0
@@ -241,7 +281,7 @@ def main(argv=None):
         for batch, context in zip(loader, contexts):
             view = masked_view(batch, rich if context == "rich" else sparse, device)
             optimizer.zero_grad(set_to_none=True)
-            logits = model(view["tokens"], view["modality_mask"], view["token_mask"])["logits"]
+            logits = forward_view(model, view)["logits"]
             loss = brier_loss(logits, view["label"])
             loss.backward()
             if clip_norm is not None:
