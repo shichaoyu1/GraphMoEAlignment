@@ -1,207 +1,71 @@
-# Idea2 Neurocomputing submission blueprint
+# Idea2 投稿蓝图：2026-10-13 修订建议稿
+
+当前优先级高于旧2026-08-05蓝图。旧版已原样备份于 `scratch/idea2_revision_20261013/PAPER2_NEUROCOMPUTING_BLUEPRINT.original.md`。本稿不代表新增实验已执行，也不保证特定期刊的创新性门槛已满足。
 
 ## Working title
 
-**Prior-Guided Mixture-of-Anchor Experts for Auditable Evidence Routing in Glioma MRI**
+**Factorized Anchor Retrieval under Incomplete Patient-Level Supervision**
 
-## Central claim
+## Central question
 
-The paper presents a **prior-guided, auditable anchor-family evidence router**. It does not claim learned topology discovery, biological causality, or a clinically validated decision system.
+How much of the gain in family-factorized anchor retrieval comes from between-family allocation, within-family discrimination, and patient-dependent routing, and how sensitive are these effects to target construction and missing labels?
 
-The central learning-system question is:
+The empirical co-occurrence prior is a secondary comparison. Current evidence does not establish its added value over a capacity-matched unstructured mixture. Paper4 geometry remains outside this paper.
 
-> In a low-data medical retrieval setting, when does a train-fold disease co-occurrence prior improve family-level evidence allocation, and when does learned edge refinement add unnecessary flexibility?
+## Evidence available now
 
-The current evidence supports family-level functional dependence much more strongly than individual topology-edge dependence. The revision therefore treats fixed prior-guided routing as the main method and learned topology as a gated ablation.
-
-## Current evidence and claim boundary
-
-| Observation | Current estimate | Permitted interpretation |
+| Method / contrast | mAP or paired difference | Interpretation |
 |---|---:|---|
-| Hybrid routed mAP | 0.6300 | Single-split/seed-aggregate starting point, not final main result |
-| Prior-only routed mAP | 0.6298 | Learned edge correction has no demonstrated benefit |
-| Identity/uniform/shuffled topology | approximately −0.004 mAP | Specific topology edges have weak test-time influence |
-| Expert removal/wrong-family/family permutation | −0.106 to −0.281 mAP | Family routing is functionally used by the model |
-| Residual usage | approximately 1.5% | Residual branch is unnecessary; removed in the revised profiles |
-| Residual removal | ΔmAP = 0 | Confirms removal is safe for the observed run |
-| Direct-best vs routed-best | 0.6813 vs 0.6300 mAP | The old routed head has a material optimization deficit |
-| Routed-best epoch | epoch 1 for all three seeds | Joint training/checkpoint selection is mismatched to routed retrieval |
+| Direct | 0.6571 | Separately trained direct baseline |
+| Unstructured family MoE | 0.7337 | Strong existing control |
+| Prior-guided | 0.7343 | Complete training pipeline |
+| Prior minus direct | +0.0773 [0.0716, 0.0830] | Pipeline gain; mechanism not yet isolated |
+| Prior minus unstructured | +0.0006 [−0.0014, 0.0027] | Added prior benefit not established |
 
-Edema–molecular and Enhancing/Core–pathology patterns are reported only as **stable model-routing patterns** until they survive target-policy, supervision, and label-completeness audits. Interventions are described as **model-internal sanity checks** or an **intervention audit**.
+Five patient folds × three initialization seeds, 625 distinct held-out patients. Patient-aggregated paired bootstrap intervals. MRR does not clearly improve; grade 3 gain remains uncertain. Original identity node permutations are invalid controls; the replacement enumeration is post-hoc.
 
-## Contributions, ordered for Neurocomputing
+## Proposed manuscript structure
 
-1. An anchor-family hierarchical mixture architecture that decomposes MRI-to-anchor retrieval into auditable evidence-family routes.
-2. A train-fold-only disease co-occurrence prior used as fixed routing context, with a capacity-matched unstructured MoE control.
-3. A patient-clustered intervention and supervision-sensitivity audit that separates architectural behavior from target construction and missing-label effects.
-4. An empirical design result for low-data learning: fixed family structure may be sufficient, while learned anchor-edge correction is retained only if it clears a pre-registered gain threshold.
+1. **Introduction:** incomplete, heterogeneous patient labels create a family allocation problem. Distinguish the new mechanism question from Paper1's task introduction.
+2. **Related work:** local and multi-positive medical alignment, conditional retrieval, and routing. Compare MGCA/RadZero faithfully; patient label prototypes are not report embeddings.
+3. **Task and protocol:** MRI units, label fields, prototype construction, region_rules, missing labels, 26-anchor gallery, negative candidates, worked synthetic patient example, splits and metric definitions. Use Hit@1 for the existing first-positive-hit metric.
+4. **Factorized retrieval:** explicit family score equation; explain why gate-only changes preserve within-family ranks. State that this is a standard decomposition property, not a novel theorem.
+5. **Experiments:** fixed full performance matrix, basic matched baselines, shared/separate projection × static/dynamic gate design, supervision sensitivity, grade and label-coverage strata, external validation only when available.
+6. **Discussion:** distinguish score allocation, feature learning, supervision-conditioned behavior, and independent clinical correspondence. Include timing cost and limits of the small anchor gallery.
 
-The fourth contribution is a conditional result, not a universal theorem.
+## Contribution wording permitted now
 
-## Journal fit
+- A task-specific implementation of family-conditional label-prototype retrieval whose within-family ranking and between-family allocation can be inspected separately.
+- Repeated patient-split evidence of improved mAP for the complete family mixture training pipeline, together with a matched control limiting attribution to the co-occurrence prior.
+- An audit of target provenance and intervention validity that explicitly separates model dependence from clinical grounding.
 
-[Neurocomputing](https://www.sciencedirect.com/journal/neurocomputing) explicitly covers neural architectures, learning methods, network dynamics, pattern recognition, and image processing. The manuscript should therefore lead with the learning mechanism, controlled architecture comparison, and audit protocol. Glioma MRI is the test bed rather than the sole novelty.
+Static-gate superiority/inferiority, supervision robustness, and external generalization are **pending questions**, not completed contributions. The present technical novelty remains limited until the controlled mechanism results distinguish the approach from simpler alternatives.
 
-Two same-journal comparisons must be explicit:
+## Bounded execution order
 
-- Yu et al., [Multimodal multitask similarity learning for vision language model on radiological images and reports](https://www.sciencedirect.com/science/article/pii/S0925231225006903), *Neurocomputing* 636 (2025) 130018, DOI: 10.1016/j.neucom.2025.130018. M2SL learns relational and knowledge-driven semantic similarity for radiology image–report retrieval. The present work differs by routing region-level MRI evidence through an explicit anchor-family hierarchy and auditing the routing mechanism.
-- Wang et al., [HMP-Net: A hierarchical multi-prior network for brain tumor segmentation integrating physics, topology, and tumor dynamics](https://www.sciencedirect.com/science/article/pii/S0925231226012245), *Neurocomputing* 691 (2026) 133827, DOI: 10.1016/j.neucom.2026.133827. HMP-Net uses Betti/morphological topology and physical/dynamical priors for segmentation. Here, “topology” is a train-fold anchor co-occurrence transition prior; it is not spatial homology, Betti topology, or tumor morphology.
+1. Preserve the existing 45 runs; document targets and metrics; repair future nonidentity permutation audits without retraining the main matrix.
+2. Add train-fold frequency and node-frequency controls, same-encoder global and label-classification baselines. Fit any score calibration using training/validation data only.
+3. Compare shared/separate family projections × static node/patient-dynamic gates with topology absent and matched training. Frozen-direct calibration replay is a separate diagnostic.
+4. On one fixed base architecture, compare region_rules/all_patient_anchors × family supervision on/off; disclose specialization penalties and remaining retrieval supervision.
+5. Seek one independent cohort with compatible observed labels. Do not import Paper1 external numbers without their provenance. Keep internal robustness distinct from external transfer.
 
-## Manuscript structure
+If resources require screening, use the prechosen seed42 across all five folds and pair it with seed42 references. Mark the work exploratory: existing held-out results have already informed the design. Expand only comparisons needed for the central question, and avoid selecting models from test results.
 
-### 1. Introduction
+## Stop conditions
 
-- Problem: region-level MRI evidence is aligned to heterogeneous pathology and molecular anchors, but a single similarity head does not expose which evidence family supports a retrieval.
-- Gap: medical retrieval work emphasizes representation alignment; prior-guided mixture models rarely test whether the prior itself matters, whether learned refinement is needed, or whether apparent specialization is induced by supervision.
-- Proposal: a fixed-prior family router with intervention and supervision audits.
-- Contributions: use the four contributions above, keeping performance claims conditional on the non-inferiority analysis.
+- If static calibration accounts for the gain and a dynamic benefit is not established, simplify the method and its title.
+- If effects depend on the regional label rule, restrict conclusions to that weak-supervision protocol.
+- If benefit remains concentrated in grade 4, report that limitation rather than choosing favorable cohorts.
+- Do not add learned graphs, diffusion, residual semantics, or Paper4 geometry to rescue the original narrative.
 
-### 2. Related work
+## Sources and detailed revision draft
 
-1. Medical image–text and image–concept retrieval, including M2SL.
-2. Mixture-of-experts routing and structured/gated retrieval.
-3. Knowledge-guided learning in medical imaging.
-4. Topology in medical imaging, separating graph/co-occurrence topology from Betti/morphological topology as used by HMP-Net.
-5. Auditing interpretability claims under supervision leakage and missing labels.
+See [PAPER2_REVIEW_TRANSFER_20261013.md](D:/code/pythonProject/PygMonAI/glioma/PAPER2_REVIEW_TRANSFER_20261013.md) for the reviewer mapping, derivations, proposed controls, literature links, and reusable positioning paragraphs.
 
-### 3. Method
+Verified results: [实验结果整理.md](D:/code/pythonProject/PygMonAI/glioma/output/sever_paper2+paper4_20260824alloutput/整理结果_20260908/实验结果整理.md).
 
-#### 3.1 Task and anchor vocabulary
+## Implementation status: 2026-10-13
 
-- Define each patient as the independent unit.
-- Define Core, Edema, and Enhancing queries.
-- Construct the anchor vocabulary from the training fold only.
-- State target-policy alternatives (`region_rules`, `all_patient_anchors`).
+The supplemental protocol is implemented in the isolated `paper2_revision` package and new CLI entry points. Existing model, training, profile and server code is unchanged. It adds train-only frequency controls, static calibration, matched family-head factors, explicit supervision/candidate controls, published proxy-loss adaptations, protocol exports, nonidentity gate replay, paired aggregation and frozen external evaluation. These capabilities have been tested with synthetic NIfTI fixtures; new scientific results on the real cohort are not yet available.
 
-#### 3.2 Direct anchor aligner
-
-- Shared MRI encoder and prototype bank.
-- Direct cosine-similarity retrieval head.
-- This is the capacity reference for non-inferiority.
-
-#### 3.3 Family router
-
-- Partition anchors into pathology, molecular, and clinical families when available.
-- Remove the residual family.
-- Compute family gates and within-family conditional anchor probabilities.
-- Describe `direct logits + log family gate` as the conservative fallback score, not as the default unless the independent expert projection misses the non-inferiority bound.
-
-#### 3.4 Train-fold prior
-
-- Build patient-level anchor co-occurrence counts on the training fold only.
-- Row-normalize to obtain the fixed prior.
-- Define empirical, uniform, and deterministic random training priors.
-- Define `prior_plus_learned` and its regularization, but mark it as an ablation unless it passes the learned-topology gate.
-
-#### 3.5 Three-stage optimization
-
-1. Train the direct encoder and prototype bank to direct validation optimum.
-2. Freeze encoder/prototypes; train router and experts with direct-to-routed score distillation.
-3. Jointly fine-tune at 0.1× learning rate with routed validation mAP early stopping.
-
-#### 3.6 Audit protocol
-
-- Training controls: empirical, uniform, and random priors.
-- Model interventions: topology identity/uniform/shuffle; uniform, patient-shuffled, and node-shuffled routing; expert removal; anchor-family permutation.
-- Supervision audits: target policy and family-balanced route supervision on/off.
-- Missingness audits: IDH, MGMT, 1p/19q availability and molecular-complete subset.
-- Routing contrasts: within-patient differences between habitats.
-
-### 4. Experiments
-
-#### 4.1 Cohort and preprocessing
-
-- Report inclusion/exclusion, patient count, MRI sequence completeness, habitat availability, grade distribution, and all molecular-label missingness.
-- State ethics approval and de-identification details using verified institutional wording.
-
-#### 4.2 Cross-validation
-
-- Five-fold patient-level split with fixed fold seed.
-- Test fold `k`, validation fold `k+1`, remaining folds for training.
-- Three initialization seeds for `direct_only`, `unstructured_family_moe`, and `prior_guided_router`.
-- Vocabulary, prior, normalization statistics, and supervision statistics are derived independently within each training fold.
-
-#### 4.3 Baselines
-
-- `direct_only`: same encoder/prototype bank; no router.
-- `unstructured_family_moe`: same expert capacity; raw family context, no topology propagation.
-- `prior_guided_router`: fixed empirical train-fold prior.
-- `prior_plus_learned`: learned correction ablation.
-- Uniform and random prior training controls.
-
-#### 4.4 Metrics and statistics
-
-- mAP, MRR, and Recall@1 are computed per query and averaged within patient first.
-- Concatenate held-out predictions across folds and average repeated initialization results within patient.
-- Use 10,000 paired patient bootstrap resamples for method differences and 95% confidence intervals.
-- Report parameter count, approximate Conv/Linear FLOPs, peak GPU memory, and per-patient latency.
-- Primary non-inferiority margin: −0.01 mAP for prior-guided routed versus direct-only.
-
-### 5. Results
-
-1. Main patient-level comparison and efficiency.
-2. Direct-to-routed non-inferiority and optimization trajectory.
-3. Fixed-prior versus unstructured/controlled priors.
-4. Learned correction versus fixed prior.
-5. Intervention audit.
-6. Within-patient routing contrasts and missingness/supervision sensitivity.
-
-Do not open Results with qualitative routing heatmaps. Lead with the main patient-level estimates and confidence intervals.
-
-### 6. Discussion
-
-- Interpret family-level dependence and weak edge-level sensitivity separately.
-- If fixed prior and unstructured MoE are indistinguishable, narrow the claim to auditable decomposition rather than structured-routing benefit.
-- Explain why the old jointly trained routed head selected epoch 1 and how staging/distillation changes the optimization problem.
-- Discuss supervision-conditioned specialization before any domain interpretation.
-- Limitations: single center, finite label availability, rule-based target construction, anchor vocabulary dependence, no external cohort, retrieval surrogate rather than clinical outcome.
-
-### 7. Conclusion
-
-Conclude with the learning-system finding supported by the final gates. Do not conclude that the model discovers glioma biology.
-
-## Main figures and tables
-
-- **Figure 1:** MRI habitats → anchor families → train-fold prior-guided router → anchor retrieval. Visually distinguish the fixed prior from learned parameters.
-- **Figure 2:** Direct, unstructured MoE, prior-guided router, and optional learned correction. Show patient-level 95% CIs and a companion efficiency panel.
-- **Figure 3:** Within-patient routing contrasts with 95% CIs, stratified by label availability and sensitivity run.
-- **Figure 4:** Training controls and model interventions. Use effect-size/CI plots rather than isolated bars.
-- **Table 1:** Cohort, labels, availability, and missingness by fold.
-- **Table 2:** Five-fold × seed main comparison, patient-level estimates and paired differences.
-- **Table 3:** Prior, topology, target-policy, supervision, and fallback scoring ablations.
-- **Supplement:** learned new-edge stability, per-fold results, full intervention subgroups, run configuration, and compute environment.
-
-## Submission gates
-
-| Claim | Required evidence | Action if failed |
-|---|---|---|
-| Routed model is the main performance method | Lower 95% CI of routed − direct mAP > −0.01 | Present routing as an audit/calibration layer, not a performance method |
-| Structured routing is effective | Prior-guided beats unstructured and uniform/shuffled controls with paired CI excluding 0 | Use “auditable family decomposition”; remove structure-benefit claim |
-| Learned topology is a main contribution | Mean gain ≥ 0.005, lower CI > 0, same direction in every fold | Move learned correction to supplement |
-| Habitat-specific evidence allocation | Same direction and CI excluding 0 under alternate target policy, supervision off, and complete-label subset | Use “supervision-conditioned auditable decomposition” |
-
-Until all necessary gates are available, the internal editorial status remains **Reject/Resubmit—premature**. A complete statistical and supervision audit can raise it to a submission-ready manuscript likely to require major revision.
-
-## Required declarations
-
-Add verified, author-approved text for:
-
-- Ethics approval and consent/waiver.
-- Data availability and access restrictions.
-- Code availability with a frozen release identifier.
-- CRediT authorship contributions.
-- Funding.
-- Declaration of competing interest.
-- Generative AI disclosure consistent with Elsevier policy at submission time.
-
-Do not invent approval numbers, funders, repositories, or author roles.
-
-## Implemented experiment artifacts
-
-- `run_server_paper2_neurocomputing.sh`: five-fold × three-seed main matrix and optional full sensitivity matrix.
-- `cli/train_semantic_alignment.py`: controlled profiles, staged optimization, distillation, train-time prior controls, and patient CV.
-- `cli/audit_paper2_neurocomputing.py`: 10,000-resample patient bootstrap, routing contrasts, figures, CSV, and submission gates.
-- `semantic/paper2_statistics.py`: patient-first metrics and paired inference.
-- `training/efficiency.py`: parameter, FLOP approximation, memory, and latency profiling.
-
-The original research note remains useful as the development history. This blueprint is the submission-facing narrative and should be used as the source of truth for the revised manuscript.
+See [实验执行说明](D:/code/pythonProject/PygMonAI/glioma/PAPER2_REVISION_EXPERIMENTS.md) and [代码审查记录](D:/code/pythonProject/PygMonAI/glioma/PAPER2_REVISION_CODE_REVIEW.md). MGCA/RadZero official-system reproduction is not claimed by the implemented loss adaptations.
