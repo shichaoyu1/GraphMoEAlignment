@@ -126,8 +126,10 @@ def prepare_case(root, sid, cache_dir, headers_only=False):
             if str(old["signature"]) == key:
                 return json.loads(str(old["provenance"]))
     seg = segmentation.get_fdata(dtype=np.float32)
-    if not np.any(seg > 0):
-        raise ValueError(f"{sid}: empty tumor segmentation")
+    if not np.isfinite(seg).all() or np.any(seg < 0):
+        raise ValueError(f"{sid}: invalid tumor segmentation values")
+    # The shared ROI loader uses full in-plane central slices for all-zero masks.
+    roi_mode = "tumor_bbox" if np.any(seg > 0) else "central_full_plane_empty_mask"
     bbox = _bbox_from_mask(seg)
     z_ids = _z_indices(bbox[-1], seg.shape[2], 7)
     case = dict(patient_dir=str(folder), subject_id=sid, label=0)
@@ -137,7 +139,8 @@ def prepare_case(root, sid, cache_dir, headers_only=False):
     provenance = dict(subject_id=sid, files=[Path(p).name for p in paths],
                       segmentation=Path(seg_path).name, shape=list(volumes[0].shape),
                       affine=volumes[0].affine.tolist(), orientation=list(nib.aff2axcodes(volumes[0].affine)),
-                      bbox=[int(v) for v in bbox], z_ids=[int(z) for z in z_ids], signature=key)
+                      bbox=[int(v) for v in bbox], z_ids=[int(z) for z in z_ids], signature=key,
+                      roi_mode=roi_mode)
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_suffix(".tmp.npz")
     np.savez(temporary, images=images.numpy(), masks=masks.numpy(), signature=key,
