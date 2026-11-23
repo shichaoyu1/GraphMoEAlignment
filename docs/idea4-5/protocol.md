@@ -1,6 +1,6 @@
 # Idea4.5 实验协议 v3：现象、机制与干预价值
 
-日期：2026-09-30。状态：重新设计完成，E0–E2 代码已落实，尚未执行服务器试点和确认实验。E3/E4 仍需满足本协议的放行条件后实现。旧研究笔记和 [v2](IDEA4_5_PROTOCOL.md) 保留作历史记录；重构前缺口见 [设计审查](IDEA4_5_DESIGN_AUDIT.md)。
+日期：2026-09-30。状态：重新设计完成，E0–E2 代码已落实，撰写时尚未执行服务器试点和确认实验。2026-11-03 的 UTSW 结果更新见[历史研究记录](../archive/IDEA4_5_RESEARCH.md)。E3/E4 仍需满足本协议的放行条件后实现。旧研究笔记和 [v2](../archive/IDEA4_5_PROTOCOL.md) 保留作历史记录；重构前缺口见 [设计审查](../archive/IDEA4_5_DESIGN_AUDIT.md)。
 
 ## 1. 论文定位与确认顺序
 
@@ -181,7 +181,7 @@ H1 与 H2 的确认检验预定义顺序；主张作用翻转时报告 A_r、A_s
 | 6 | UTSW 原始 NIfTI：患者级 5 折、grade/IDH/MGMT/1p19q 标签、分块测量审计 | 已实现；默认 pooled token 支持特征级复验，服务器实数数据待验证 |
 | 7 | E3/E4：多步分支、同信息直接风险选择、控制器和实际计算预算 | 未实现；需先通过 E1–E3 放行条件 |
 
-当前 `run_server_idea4_5.sh` 的 pilot 模式对应 24 轨迹试点；full 模式覆盖合成确认主单元和架构控制；`utsw-test`/`utsw` 分别执行真实数据短测和 5 折复验。UTSW 的 CV 折来自同一队列，只能用于描述患者划分变化，不能视为独立数据集重复。确认样本量仍须用试点方差冻结，不能因为 launcher 已提供 20 个 data seed 就跳过样本量判断。
+历史批跑协议覆盖 24 条试点轨迹、合成确认与架构对照、UTSW 一折短测和五折复验。UTSW 的 CV 折来自同一队列。确认样本量须用试点方差冻结。
 
 ## 13. 根据结果调整论文主张
 
@@ -197,3 +197,57 @@ H1 与 H2 的确认检验预定义顺序；主张作用翻转时报告 A_r、A_s
 | 独立公共任务不复现 | 报告适用边界，避免一般多模态机制结论 |
 
 论文按“问题与可证伪假设→测量定义→简单骨干现象→替代解释→路径定位→独立有限步验证→条件性干预”组织。每张主表注明数据角色、运行数、预算和估计单位。写作应服从确认结果，而不以预定模块数量决定贡献数量。
+
+## 真实数据 NPZ 合同
+
+每个 `train/val/test` 必须包含：
+
+```text
+{split}_tokens       [N,G,M,T,C]
+{split}_labels       [N]
+{split}_sample_ids   [N]
+{split}_group_ids    [N]
+```
+
+可选 `{split}_modality_mask [N,M]` 和 `{split}_token_mask [N,G,M,T]`。加载器会拒绝跨 split 的 sample/group 重叠。当前配对协议要求 rich 的全部模态完整观测且每模态至少两个有效 token。
+
+`--label_mode sign` 实现 `<0` 对 `>=0`；`--label_mode sign_nozero` 实现 `<0` 对 `>0` 并删除零分对象。二者不能在一张结果表混用。
+
+## UTSW 原始数据
+
+服务器上的数据路径示例：
+
+```text
+/root/autodl-tmp/dataset/UTSW-Glioma
+/root/autodl-tmp/dataset/UTSW_Glioma_Metadata-2-1.tsv
+```
+
+加载器逐患者读取四种 MRI（T1、T1CE、T2、FLAIR）和肿瘤分割，从肿瘤区域裁取 7 个切片。原始 NIfTI 只读，不复制到输出目录。默认的 `pooled` 编码把每个模态确定性池化为 8×8 token，因此 UTSW 结果应表述为特征级可用性干扰证据。CLI 另提供 `--utsw_encoder cnn`，但它不属于默认确认配置。
+
+`--utsw_task` 支持 `grade`、`idh`、`mgmt`、`1p19q`。默认 `grade` 将 II/III/IV 映射为 0/1/2；缺失目标标签的患者会被排除。每折以一个患者折作测试、下一折作验证，其余折作训练，训练集内再按患者隔离 fit/select/measure。
+
+## Python 入口
+
+从包含 `glioma/` 的父目录启动。以下是 UTSW 一折短测。合成试点可用 `--dataset synthetic`，再按协议设置 `--information_condition`、`--data_seed` 和 `--train_seed`。
+
+```bash
+python -m glioma.cli.idea4_5 --dataset utsw --utsw_task grade \
+  --data_root /path/to/UTSW-Glioma --metadata_tsv /path/to/metadata.tsv \
+  --cv_fold 0 --epochs 1 --audit_source_batches 5 \
+  --out_dir /path/to/idea4_5_smoke
+
+python -m glioma.cli.aggregate_idea4_5 --root /path/to/completed_run_root
+```
+
+## 运行产物
+
+每条轨迹包含：
+
+- `config.json`、`data_roles.json`：完整配置、角色索引及稳定 ID。
+- `checkpoint_epoch_*.pt`：模型、优化器、Python/NumPy/PyTorch/CUDA RNG 状态。
+- `history.json`：训练风险、两上下文对象/批次曝光、裁剪触发和验证结果。
+- `audits.json`：每个源批次的四分支估计、控制项及块级诊断。
+- `audit_objects_*.npz`：逐对象四分支风险及源/测量 ID。
+- `test_metrics.json`、`run_summary.json`、`run_status.json`：最终风险、运行摘要和状态。
+
+全局 `aggregate/aggregation.csv` 和 `aggregation.json` 给出聚合结果及 95% bootstrap 区间；合成数据以 data seed 为聚合单位，UTSW 折间区间只描述同一队列的患者 CV 折变化，不能写成独立队列复现。`run_inventory.json` 保留全部完成和失败状态。结果解释遵守 v3 的收缩规则：`delta_rel>0` 不能写成绝对损害，`J!=0` 不能单独写成路径导致长期侵蚀。

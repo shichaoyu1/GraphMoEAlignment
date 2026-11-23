@@ -2,7 +2,34 @@
 
 > **核心结论**：下游任务对某张模态图敏感，并不证明该图恢复了真实模态关系。表征几何（geometry）、通信支持与预算（communication）和边权分配（edge allocation）必须被分别诊断。
 
-本文档是 Paper 4 的中文主笔记，负责统一研究命题、证据边界、实验决策和写作口径。运行细节保留在 [PAPER4_MANIFOLD_GUIDE.md](PAPER4_MANIFOLD_GUIDE.md) 与 [PAPER4_GRAPH_EVIDENCE.md](PAPER4_GRAPH_EVIDENCE.md)；可直接用于英文论文的结构见 [PAPER4_ICLR_NARRATIVE.md](PAPER4_ICLR_NARRATIVE.md)。
+本文档是 Paper 4 的中文主笔记，涵盖研究命题、证据边界、实验决策和写作口径。当前 Python 入口见第 10 节；英文论文结构见[写作蓝图](manuscript.md)。
+
+## 2026-09-08 更新：UTSW confirmation 已完成
+
+本节是最新证据入口；下文旧三轮数值保留为历史发现过程。完整结果、新增种子对照、配对区间、子任务和审计记录见 本轮结果报告（本地产物 `reports/paper4_confirmation_20260908/RESULTS.md`）。
+
+- 实际来源：`output/sever_paper2+paper4_20260824alloutput/server_runs/paper4_iclr_factorial_v1`。
+- 完成 **81/81**：原 screening 33 次保留不变，新增 confirmation 48 次；8 个确认模型各有 split `42/43/44` × model `101/102/103`，另外 HeMIS/GMU/MBT-style 各 3 次为筛选阶段设计。
+- baseline 继续使用先前按 screening validation 选定的 `latent_concat`，不按 test 重新选择。独立复算全部 81 次患者级 mAP 与存档一致；同 split 的患者划分、anchor vocabulary、50-epoch 训练预算已核对。
+
+| 确认模型（各 n=9） | Test mAP，均值 ± 样本 SD |
+|---|---|
+| SPD-UB | **0.726674 ± 0.009419** |
+| SPD uniform-both | 0.725569 ± 0.010437 |
+| SPD upper-only | 0.712739 ± 0.010528 |
+| SPD learned-both | 0.705391 ± 0.014021 |
+| SPD identity-both | 0.700747 ± 0.009741 |
+| SPD no-anchor-family | 0.686718 ± 0.013127 |
+| Euclidean learned-both | 0.640545 ± 0.020208 |
+| latent_concat | 0.629807 ± 0.010780 |
+
+本轮 geometry gain **+6.485 mAP 点**、communication gain **+2.482 点**、allocation gain（learned−uniform）**−2.018 点**，方向均为 9/9 一致；这些是不同条件对比，不能相加为独立因果贡献。SPD-UB 较 learned 高 **2.128 点**、较 concat 高 **9.687 点**，但较 uniform 仅 **0.111 点**，描述性配对 95% CI **[−0.076,+0.289] 点**，因此只能称性能接近，不能称显著更优或已证明等价。uniform 的 validation 均值略高于 SPD-UB，SPD-UB 的定位来自预定简化方案，不能用 test 排名替代 validation 选型。
+
+干预方面，S(A,A)=0.705391、S(A,B)=0.670648、S(B,B)=0.725569，A=learned、B=uniform。换图平均成本 **+3.474 点**，但只有 **8/9** 组掉点；重新训练 uniform **9/9** 更好，co-adaptation gap **+5.492 点**。这与协同适应解释相容，不是唯一机制的证明。
+
+Anchor-family 对 molecular **+5.372 点**（9/9），pathology **−0.114 点**且区间跨零。固定 split 的局部边 Spearman 分别 **0.505/0.333/−0.048**，上层为 **0.513/0.783/0.448**；上层更稳定，仍不能等同图真值恢复。
+
+统计边界：3 个 split 来自同一队列，测试患者有重叠；bootstrap 区间仅描述 split/model 运行变异。原始逐患者干预分数未导出，本轮效率记录为空。**UTSW 阶段完成，整篇论文证据尚未完成**；synthetic、AV-MNIST、MOSEI 与效率仍待补证据。旧第三轮继续保留 `prototype_incomplete`，本轮新目录为 `factorial_complete`。
 
 ## 1. Idea 4 研究卡片
 
@@ -231,10 +258,10 @@ mean(Aα H) = (1/M) 1ᵀ Aα H = (1/M) 1ᵀ H = mean(H).
 | 测地性不保证任务效用 | 强 | 更低 energy ratio，但 mAP 低于 Euclidean | 只针对当前路径目标与任务 |
 | SPD moment geometry 有效 | 强 | 两轮 matched Euclidean 对照均明显落后 | 尚需公开数据复现 |
 | 强制通信预算可防止 self-collapse | 强 | off-diagonal mass 精确达到预算 | 结构参与不等于性能提升 |
-| learned edge allocation 优于固定分配 | 不支持 | uniform 比 learned 高 0.0256 | 第三轮尚未完成完整协议 |
+| learned edge allocation 优于固定分配 | 不支持 | 本轮 confirmation uniform 比 learned 高 0.020177，9/9 | 仅适用于当前 UTSW 协议，非普遍结论 |
 | 测试干预可证明图正确 | 被反例否定 | intervention cost 与 retrained advantage 同时为正 | 需要 topology supervision 或额外可识别性假设 |
 | semantic support 对所有目标有益 | 不支持 | molecular 与 pathology 趋势不同 | 需报告 target-family subgroup |
-| SPD-UB 是更简单的候选方法 | 中等 | 当前性能、代数等价性和参数效率 | 需要 AV-MNIST、MOSEI 和完整 UTSW 确认 |
+| SPD-UB 是更简单的候选方法 | UTSW 性能已确认 | 0.726674 ± 0.009419，与 uniform 接近 | 公开数据与本轮效率未确认；不宣称显著优于 uniform |
 
 ## 9. 协议风险与修复
 
@@ -256,41 +283,50 @@ mean(Aα H) = (1/M) 1ᵀ Aα H = (1/M) 1ᵀ H = mean(H).
 - 合成实验：5 data seeds × 5 model seeds；公开数据使用官方 split × 5 model seeds。
 - 主指标使用 paired contrast 与 hierarchical bootstrap 95% CI，所有方法只按 validation 选择。
 
-## 10. 新实验入口
+## 10. Python 实验入口
 
-### UTSW factorial protocol
+从包含 glioma/ 的父目录运行。以下是 UTSW 阶乘协议中一个 SPD-UB 单元，完整矩阵和 seed 口径见本节表格。
 
 ```bash
-DRY_RUN=1 \
-DATA_ROOT=/root/autodl-tmp/dataset/UTSW-Glioma \
-METADATA_TSV=/root/autodl-tmp/dataset/UTSW_Glioma_Metadata-2-1.tsv \
-STAGE=screen \
-bash run_server_paper4_iclr_evidence.sh
+python -m glioma.cli.train_semantic_alignment \
+  --paper_config paper4 --data_root /path/to/UTSW-Glioma \
+  --metadata_tsv /path/to/metadata.tsv \
+  --paper4_fusion_backend spd_hierarchical --spd_graph_policy cross_budget \
+  --spd_local_topology identity --spd_upper_topology uniform \
+  --split_seed 42 --model_seed 101 --epochs 50 --num_workers 4 --augment \
+  --skip_interventions --out_dir /path/to/run_root/spd_ub/paper4/split_42/model_101
 ```
 
-screening 后按 mean validation mAP 确定最佳 published baseline，再执行：
+| 变体 | 几何 | 局部 / 上层拓扑 | 额外参数 |
+|---|---|---|---|
+| spd_cross_graph | spd | learned / learned | 执行图干预 |
+| spd_identity_graph | spd | identity / identity | |
+| spd_uniform_graph | spd | uniform / uniform | |
+| spd_upper_only | spd | identity / learned | |
+| spd_ub | spd | identity / uniform | |
+| spd_no_anchor_family | spd | learned / learned | --disable_spd_anchor_families |
+| euclidean_cross_graph | euclidean | learned / learned | --spd_geometry euclidean |
+| latent_concat / hemis / gmu / mbt_style | published | 由基线定义 | --paper4_fusion_backend published_baseline --paper4_baseline 对应名称 |
+
+历史 screening 使用 split 42/43/44、model 101，运行全部 11 组。按验证 mAP 选择 published baseline 后，confirmation 为 7 个核心组加选定基线，补 model 102/103。组内保留相同 split、训练预算和输出布局。
 
 ```bash
-BEST_PUBLISHED_BASELINE=hemis \
-STAGE=confirm \
-DATA_ROOT=/root/autodl-tmp/dataset/UTSW-Glioma \
-METADATA_TSV=/root/autodl-tmp/dataset/UTSW_Glioma_Metadata-2-1.tsv \
-bash run_server_paper4_iclr_evidence.sh
+python -m glioma.cli.aggregate_paper4_diagnostics \
+  --run_root /path/to/run_root --metric map \
+  --expected_split_seeds 42 43 44 --expected_model_seeds 101 102 103 \
+  --expected_variants spd_cross_graph spd_identity_graph spd_uniform_graph \
+    spd_upper_only spd_ub spd_no_anchor_family euclidean_cross_graph latent_concat
 ```
 
 ### Synthetic / AV-MNIST / CMU-MOSEI
 
 ```bash
-DATASET=synthetic \
-SPLIT_SEEDS="42 43 44 45 46" \
-MODEL_SEEDS="101 102 103 104 105" \
-GRAPH_TYPES="chain star two_community" \
-REGIMES="geometry_only exchangeable topology_relevant" \
-MISSING_RATES="0.0 0.25 0.50" \
-bash run_server_paper4_public_benchmarks.sh
+python -m glioma.cli.train_paper4_benchmark \
+  --dataset synthetic --planted_graph chain --synthetic_regime topology_relevant \
+  --split_seed 42 --model_seed 101 --out_dir /path/to/new_synthetic_run
 ```
 
-AV-MNIST 和 MOSEI 使用同一 NPZ token 协议：每个 split 必须包含 `<split>_tokens` 与 `<split>_labels`，可选 `<split>_modality_mask` 和 `<split>_token_mask`。`tokens` 形状为 `[N,G,M,T,C]`；当前公开基准设 `G=1`。
+AV-MNIST 和 MOSEI 使用 --dataset avmnist 或 --dataset mosei，并提供 --data_path。每个 NPZ split 包含 <split>_tokens 与 <split>_labels，可选 <split>_modality_mask 和 <split>_token_mask。token 形状为 [N,G,M,T,C]，公开基准设 G=1。
 
 ## 11. 投稿前证据门槛
 
@@ -343,6 +379,6 @@ AV-MNIST 和 MOSEI 使用同一 NPZ token 协议：每个 split 必须包含 `<s
 4. 通用实验：synthetic、AV-MNIST、MOSEI。
 5. 医学压力测试与效率：UTSW、SPD-UB、参数/FLOPs。
 
-摘要中的 `[PUBLIC-DATA RESULT]` 和 `[CONFIRMED VALUE]` 在确认实验前保持占位符，不能用第三轮原型数值提前填充。最终写作统一使用 `topology recovery`、`communication budget`、`edge allocation`、`co-adaptation` 四组术语，不用“真实图”“发现关系”等更强同义替换。
+摘要中的 `[PUBLIC-DATA RESULT]` 继续保留；UTSW `[CONFIRMED VALUE]` 现可使用本轮 uniform−learned **2.02 mAP points**，不能用第三轮原型数值替代。最终写作统一使用 `topology recovery`、`communication budget`、`edge allocation`、`co-adaptation` 四组术语，不用“真实图”“发现关系”等更强同义替换。
 
-最后更新：2026-08-05。
+证据更新：2026-09-08。

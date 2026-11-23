@@ -25,6 +25,9 @@ env/
 .vscode/
 .agents/
 .codex/
+.codex-ppt-build/
+.chart-data-*/
+docs/local/
 .DS_Store
 Thumbs.db
 Desktop.ini

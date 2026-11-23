@@ -206,27 +206,6 @@ class GeodesicFusionTests(unittest.TestCase):
             self.assertEqual(module.metric_support, support)
             self.assertEqual(module.use_graph, graph)
 
-    def test_server_launcher_declares_full_protocol(self):
-        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-        with open(
-            os.path.join(project_root, "run_server_paper4_geodesic_full.sh"),
-            "r",
-            encoding="utf-8",
-        ) as file:
-            launcher = file.read()
-        for variant in (
-            "full_geodesic_graph",
-            "euclidean_graph",
-            "case_only_metric",
-            "geodesic_no_graph",
-            "latent_concat",
-        ):
-            self.assertIn(f"run_variant {variant}", launcher)
-        self.assertIn('SEEDS="${SEEDS:-42 43 44}"', launcher)
-        self.assertIn('PAPER4_EPOCHS="${PAPER4_EPOCHS:-50}"', launcher)
-        self.assertIn("PAPER4_ALIGN_MAX_CASES=", launcher)
-        self.assertIn("aggregate_geodesic_runs", launcher)
-
     def test_payloads_and_figures(self):
         output = self.module(self.nodes, self.prototypes)
         records = {

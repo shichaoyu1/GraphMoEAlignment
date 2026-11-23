@@ -262,18 +262,12 @@ class ManifoldArtifactTests(unittest.TestCase):
                 metrics = json.load(file)
             self.assertIn("target_family", metrics["subgroups"]["macro"])
 
-    def test_five_figures_and_full_protocol_launcher(self):
+    def test_six_manifold_figures(self):
         output = self.module_records()
         with tempfile.TemporaryDirectory() as out_dir:
             figures = save_manifold_figures(output, {"recall@1": 0.7, "map": 0.6, "mrr": 0.8}, self.anchor_vocab(), out_dir)
             self.assertEqual(len(figures), 6)
             self.assertTrue(all(os.path.getsize(os.path.join(out_dir, name)) > 0 for name in figures))
-        root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-        with open(os.path.join(root, "run_server_paper4_graph_evidence.sh"), encoding="utf-8") as file:
-            launcher = file.read()
-        for variant in SCREEN_VARIANTS:
-            self.assertIn(variant, launcher)
-        self.assertIn('STAGE="${STAGE:-screen}"', launcher)
 
     def test_multiseed_aggregate_status(self):
         with tempfile.TemporaryDirectory() as root:

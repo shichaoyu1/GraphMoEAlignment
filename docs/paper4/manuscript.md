@@ -1,5 +1,15 @@
 # Paper 4 ICLR Narrative Blueprint
 
+## Evidence update — 2026-09-08
+
+UTSW factorial confirmation is complete: **81 runs = 33 screening + 48 new confirmation**. Eight confirmation variants have 3 data splits × 3 model seeds each. HeMIS, GMU and MBT-style retain screening-only results (n=3 each), as planned. The validation-selected baseline remains latent_concat. See audited results（本地产物 `reports/paper4_confirmation_20260908/RESULTS.md`）.
+
+The confirmed UTSW means are SPD-UB **0.726674**, uniform-both **0.725569**, learned-both **0.705391**, and latent_concat **0.629807**. Uniform outperforms learned allocation by **2.02 mAP points in 9/9 paired runs**. SPD-UB exceeds learned by 2.13 points, but its 0.11-point advantage over uniform has a descriptive paired bootstrap interval spanning zero; describe their performance as similar, not statistically equivalent or significantly different. Uniform also has a slightly higher validation mean than SPD-UB.
+
+Test-time uniform replacement reduces learned-checkpoint performance by 3.47 points on average (**8/9**, not every run), while uniform retraining improves it in 9/9; the co-adaptation gap is 5.49 points. These observations are consistent with co-adaptation and do not uniquely identify its cause. Local graph stability varies across fixed splits; upper graphs are more stable. Do not generalize local instability to all learned edges.
+
+The bootstrap resamples split and paired model seeds, not independent cohorts; the splits share patients. No current-run efficiency records or raw patient-level intervention scores were exported. Synthetic, AV-MNIST and MOSEI results remain unverified in this export. UTSW completion does not establish whole-paper readiness.
+
 ## Working Title
 
 **Topology Is Not the Message: Disentangling Geometry, Communication, and Co-Adaptation in Multimodal Fusion**
@@ -42,7 +52,7 @@ the replacement graph.
 Across synthetic data, AV-MNIST, CMU-MOSEI, and a multimodal MRI retrieval task,
 we find [PUBLIC-DATA RESULT]. In the MRI task, SPD moment geometry provides the
 largest reproducible gain, while a uniformly budgeted graph outperforms learned
-edge allocation by [CONFIRMED VALUE]. These findings motivate SPD-UB, a simpler
+edge allocation by 2.02 mAP points across nine paired runs. These findings motivate SPD-UB, a simpler
 fusion rule that removes locally redundant graph learning and uses fixed-budget
 upper-level communication.
 
@@ -51,7 +61,7 @@ not only as downstream network components, and provide concrete tests for when
 their edges can support structural interpretation.
 ```
 
-方括号内容只有在 factorial confirmation 完成后才能填。摘要不使用 “first”, “novel”, “SOTA” 或 “real topology” 等无法由当前证据支持的词。
+UTSW 数字已由本轮 factorial confirmation 填入；`[PUBLIC-DATA RESULT]` 继续保留，跨数据集段落仍是待完成骨架，不能当作已完成摘要。摘要不使用 “first”, “novel”, “SOTA” 或 “real topology” 等无法由当前证据支持的词。
 
 ## Contributions
 
@@ -141,10 +151,10 @@ Appendix 收录：完整命题证明、数据生成过程、全部 seed 结果�
 |---|---|---|---|
 | Geodesic fidelity is not task utility | matched Euclidean/geodesic comparison | UTSW vector run supports | 不推广到所有测地模型 |
 | SPD geometry is a primary gain source | same graph and budget, SPD vs Euclidean | 两轮 UTSW 支持 | 公开数据待完成 |
-| Learned allocation is not established | learned vs uniform retraining | UTSW prototype: uniform +0.0256 | 完整 baselines/seed confirmation 未完成 |
+| Learned allocation is not established | learned vs uniform retraining | UTSW confirmation: uniform +0.020177, 9/9 paired runs | 当前 UTSW 协议；其余三个基线仅 screening |
 | Intervention sensitivity is insufficient | formal counterexample + empirical reversal | UTSW reversal 已出现 | 不否认干预作为诊断的一部分 |
 | Learned edges are identifiable in some regimes | planted edge AUROC/AUPRC across regimes | 未完成 | 必须先通过 synthetic falsification gate |
-| SPD-UB is a competitive simplification | public + UTSW results, parameters/FLOPs | UTSW 原型与参数量支持 | 不提前声称普遍优于 learned graph |
+| SPD-UB is a competitive simplification | public + UTSW results, parameters/FLOPs | UTSW confirmed: 0.726674 ± 0.009419, similar to uniform | 公开数据、本轮效率待确认；不称显著优于 uniform |
 
 ## Experimental Matrix
 

@@ -1,5 +1,9 @@
 # Idea4.5：模态可用性改变时的学习路径干扰
 
+> **归档 · 历史留档。** 早期研究设计，附 2026-11-03 结果更新。正式协议见 [v3](../idea4-5/protocol.md)。
+
+> **2026-11-03 实验更新：**UTSW v3 的60条正式轨迹已完成并整理。当前预定聚合不支持平均绝对侵蚀；全部模型准确率匹配训练集多数类基线，路径交互极小且受浮点聚合精度影响。已有7200个逐患者审计文件的配对重算与标签先验对照。详见 实验结果与claim审核（本地产物 `reports/idea4_5_v3_results_20261103/RESULTS.md`）。下文保留研究设计历史；其中未运行状态以其撰写日期为准。H3/H4与本轮SPD贡献仍无对应证据。
+
 日期：2026-09-24。性质：文献支持的研究设计；撰写时尚未实现，也没有新实验结果。后续第一阶段代码见 [Idea4.5 指南](IDEA4_5_GUIDE.md)，冒烟测试不能视为研究结果。本文由 AI 辅助检索、原文核查与方法审查形成。
 
 **续审修订：**已补读 CMoB 与 ICYM²I 的正式全文方法。新增检索发现，TAG（NeurIPS 2021）已定义虚拟更新后的跨任务损失变化，Gradient Routing（2024 作者预印本）已实现前向不变的反向通路门控。因此本文中的更新审计与梯度门控均降为已有工具，不能单独作为创新。当前候选问题进一步收紧为“可用模态上下文是否改变同一共享路径的学习作用”。具体四组干预、组合基线及停止判据见 [Idea4.5 v2 补充核查与最小实验协议](IDEA4_5_PROTOCOL.md)。
@@ -20,8 +24,8 @@
 
 - 既有实现含模态特异 SPD 描述、Log-Euclidean 坐标、局部与上层图通信，可以作为新研究的结构化模型实例。
 - 现有 authority 方案的固定参数前向通路保护，不包含跨训练步骤的共享参数非干扰保证。新问题正好可以研究这一尚未覆盖的训练层面。
-- UTSW 结果支持当前协议中 SPD/Euclidean 对照的收益，但均匀图优于学习边分配；不能预设“更复杂的边学习更好”。[本地 UTSW 报告](D:/code/pythonProject/PygMonAI/glioma/reports/paper4_confirmation_20260908/RESULTS.md)
-- authority v2 合成结果中，Euclidean 在所报告的两个任务、两种联合投影架构上均优于 SPD；ACF 相比同信息同投影基线也没有稳定、实质性的普遍预测优势。[本地 v2 解读](D:/code/pythonProject/PygMonAI/glioma/reports/paper4_authority_v2_20260914/RESULTS_INTERPRETATION.md)
+- UTSW 结果支持当前协议中 SPD/Euclidean 对照的收益，但均匀图优于学习边分配；不能预设“更复杂的边学习更好”。本地 UTSW 报告（本地产物 `reports/paper4_confirmation_20260908/RESULTS.md`）
+- authority v2 合成结果中，Euclidean 在所报告的两个任务、两种联合投影架构上均优于 SPD；ACF 相比同信息同投影基线也没有稳定、实质性的普遍预测优势。本地 v2 解读（本地产物 `reports/paper4_authority_v2_20260914/RESULTS_INTERPRETATION.md`）
 
 因此可以保留 graph 与 manifold，但应该让它们接受独立消融。新方向不需要给一般模态人为指定临床式 authority；若任务没有外生资格规则，保护对象应来自可用组合的训练风险，而不是由“谁模态多/谁预测强”决定资格。
 

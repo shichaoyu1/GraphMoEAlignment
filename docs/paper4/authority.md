@@ -9,8 +9,9 @@
 解压交付的 ZIP 后保持 `glioma/` 文件夹名。建议新建 Python 3.11 或 3.12 环境，不覆盖原 MRI 环境。安装与服务器驱动匹配的 PyTorch 2.8.0 构建，然后安装其余依赖。例如已有可用 PyTorch 环境时：
 
 ```bash
-python -m pip install -r glioma/requirements-authority-server.txt
-bash glioma/authority_server.sh check
+python -m pip install -r glioma/requirements.txt
+export CUBLAS_WORKSPACE_CONFIG=:4096:8
+python -m glioma.cli.check_authority
 ```
 
 PyTorch 的 CUDA 构建应按服务器驱动选择；本机开发使用 PyTorch 2.8.0+cu126。安装方式见 [PyTorch 官方安装说明](https://pytorch.org/get-started/locally/)。通用投影采用 [CVXPYlayers](https://github.com/cvxpy/cvxpylayers)，本包固定 cvxpy 1.6.5 / cvxpylayers 0.1.9。该可选依赖链要求较新的 Python；原 Python 3.9 可运行原生解析 S1/S2 路径，但不能视作完成通用层验收。
@@ -18,25 +19,31 @@ PyTorch 的 CUDA 构建应按服务器驱动选择；本机开发使用 PyTorch 
 单卡按下面顺序执行。`/your/output/authority_v1` 换成服务器输出位置；所有阶段必须使用同一个正式输出根目录：
 
 ```bash
-bash glioma/authority_server.sh plan --root /your/output/authority_v1
-bash glioma/authority_server.sh development --root /your/output/authority_v1 --device cuda
-bash glioma/authority_server.sh freeze --root /your/output/authority_v1
-bash glioma/authority_server.sh main --root /your/output/authority_v1 --device cuda
-bash glioma/authority_server.sh attribution --root /your/output/authority_v1 --device cuda
-bash glioma/authority_server.sh rule-only --root /your/output/authority_v1 --device cuda
-bash glioma/authority_server.sh aggregate --root /your/output/authority_v1
+python -m glioma.cli.run_authority_protocol --phase plan --root /your/output/authority_v1
+python -m glioma.cli.run_authority_protocol --phase development --root /your/output/authority_v1 --device cuda
+python -m glioma.cli.run_authority_protocol --phase freeze --root /your/output/authority_v1
+python -m glioma.cli.run_authority_protocol --phase main --root /your/output/authority_v1 --device cuda
+python -m glioma.cli.run_authority_protocol --phase attribution --root /your/output/authority_v1 --device cuda
+python -m glioma.cli.run_authority_protocol --phase rule-only --root /your/output/authority_v1 --device cuda
+python -m glioma.cli.aggregate_authority --root /your/output/authority_v1
 ```
 
 运行前也可用独立目录检查 GPU 完整流程：
 
 ```bash
-bash glioma/authority_server.sh smoke --root /your/output/authority_smoke --device cuda
-bash glioma/authority_server.sh aggregate --root /your/output/authority_smoke --phases smoke
+python -m glioma.cli.run_authority_protocol --phase smoke --root /your/output/authority_smoke --device cuda
+python -m glioma.cli.aggregate_authority --root /your/output/authority_smoke --phases smoke
 ```
 
 smoke 固定为 S1/S2 × 四个核心配置，训练/验证/测试 = 1024/256/256、8 epochs、数据种子 41、模型种子 100、学习率 0.001。它只检查工程流程，不冻结正式学习率，不用于论文优势结论。
 
-`AUTHORITY_PYTHON=/path/to/python` 可指定解释器。也可直接运行 `python -m glioma.cli.run_authority_protocol ...`，此时将 `glioma` 的父目录加入 PYTHONPATH。服务器脚本会自动设置该路径。
+后台运行同样从包含 `glioma/` 的父目录启动。将 `--root` 换成正式输出根目录，并在 development 完成后执行 freeze。
+
+```bash
+nohup python -u -m glioma.cli.run_authority_protocol --phase development \
+  --root /path/to/authority_v1 --device cuda > authority_development.log 2>&1 < /dev/null &
+echo "PID=$!"
+```
 
 ## 2. 调度、恢复与多 GPU
 
@@ -49,8 +56,8 @@ smoke 固定为 S1/S2 × 四个核心配置，训练/验证/测试 = 1024/256/25
 例如两张 GPU 分别在两个终端运行：
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 bash glioma/authority_server.sh development --root /your/output/authority_v1 --shards 2 --shard 0
-CUDA_VISIBLE_DEVICES=1 bash glioma/authority_server.sh development --root /your/output/authority_v1 --shards 2 --shard 1
+CUDA_VISIBLE_DEVICES=0 python -m glioma.cli.run_authority_protocol --phase development --root /your/output/authority_v1 --shards 2 --shard 0
+CUDA_VISIBLE_DEVICES=1 python -m glioma.cli.run_authority_protocol --phase development --root /your/output/authority_v1 --shards 2 --shard 1
 ```
 
 两边开发阶段全部结束后执行一次 freeze，再以相同方式分别执行 main 和 attribution。每个 phase 的分片按稳定任务序号划分；rule-only 也支持分片。CPU 线程默认 4，可用 `--threads` 调整。请在每个阶段完成后再进入下个阶段。

@@ -6,17 +6,7 @@
 
 本说明只基于当前 `glioma` 项目本身编写。运行、配置、评估和可视化都以 `glioma/` 包内模块为边界，项目可作为独立 Python 包使用。
 
-项目当前推荐主线是：
-
-```text
-多模态 MRI ROI
-  -> 病灶区域语义节点
-  -> shared/private 表征分解
-  -> 图结构一致性约束
-  -> private latent diffusion
-  -> 病理/分子 semantic anchors
-  -> shared semantic space 对齐与检索评估
-```
+项目按研究路线提供独立配置。Paper 2 的修订入口、Paper 4 的几何与 authority 实验，以及 Idea4.5 的协议见[文档索引](README.md)。
 
 ## 目录结构
 
@@ -75,21 +65,7 @@ glioma/
 
 ## 环境准备
 
-建议使用 Python 3.9 或以上版本。可以在项目父目录创建虚拟环境：
-
-```powershell
-cd D:\code\pythonProject\PygMonAI
-python -m venv .venv
-.\.venv\Scripts\activate
-```
-
-安装基础依赖：
-
-```powershell
-pip install torch torchvision nibabel numpy matplotlib scipy
-```
-
-如果使用 GPU，请根据本机 CUDA 版本安装对应的 PyTorch 版本。仅做 smoke test 时可使用 CPU。
+按[项目首页](../README.md#setup)安装统一依赖。从包含 `glioma/` 的父目录执行以下 Python 模块命令。
 
 ## 数据准备
 
@@ -139,15 +115,15 @@ Gender
 建议从项目父目录运行，使 Python 能识别 `glioma` 包：
 
 ```powershell
-cd D:\code\pythonProject\PygMonAI
+cd /path/to/workspace
 ```
 
-先做一个最小 smoke test：
+先用实际数据路径执行 smoke test：
 
 ```powershell
 python -m glioma.cli.train_semantic_alignment `
-  --data_root "D:\dataset\脑肿瘤数据集\公共数据集\UTSW-Glioma" `
-  --metadata_tsv "D:\dataset\脑肿瘤数据集\公共数据集\UTSW_Glioma_Metadata-2-1.tsv" `
+  --data_root "/path/to/UTSW-Glioma" `
+  --metadata_tsv "/path/to/metadata.tsv" `
   --variant full `
   --max_cases 8 `
   --epochs 1 `
@@ -161,8 +137,8 @@ smoke test 通过后，可运行推荐配置：
 
 ```powershell
 python -m glioma.cli.train_semantic_alignment `
-  --data_root "D:\dataset\脑肿瘤数据集\公共数据集\UTSW-Glioma" `
-  --metadata_tsv "D:\dataset\脑肿瘤数据集\公共数据集\UTSW_Glioma_Metadata-2-1.tsv" `
+  --data_root "/path/to/UTSW-Glioma" `
+  --metadata_tsv "/path/to/metadata.tsv" `
   --variant full `
   --graph_type learnable `
   --epochs 30 `
@@ -244,9 +220,9 @@ Paper 2 不再生成 `semantic_unit_alignment_space.png`、`semantic_unit_graph_
 示例：
 
 ```powershell
-python -m glioma.cli.train_semantic_alignment --data_root "D:\dataset\脑肿瘤数据集\公共数据集\UTSW-Glioma" --metadata_tsv "D:\dataset\脑肿瘤数据集\公共数据集\UTSW_Glioma_Metadata-2-1.tsv" --variant clip
-python -m glioma.cli.train_semantic_alignment --data_root "D:\dataset\脑肿瘤数据集\公共数据集\UTSW-Glioma" --metadata_tsv "D:\dataset\脑肿瘤数据集\公共数据集\UTSW_Glioma_Metadata-2-1.tsv" --variant graph_only
-python -m glioma.cli.train_semantic_alignment --data_root "D:\dataset\脑肿瘤数据集\公共数据集\UTSW-Glioma" --metadata_tsv "D:\dataset\脑肿瘤数据集\公共数据集\UTSW_Glioma_Metadata-2-1.tsv" --variant no_graph
+python -m glioma.cli.train_semantic_alignment --data_root "/path/to/UTSW-Glioma" --metadata_tsv "/path/to/metadata.tsv" --variant clip
+python -m glioma.cli.train_semantic_alignment --data_root "/path/to/UTSW-Glioma" --metadata_tsv "/path/to/metadata.tsv" --variant graph_only
+python -m glioma.cli.train_semantic_alignment --data_root "/path/to/UTSW-Glioma" --metadata_tsv "/path/to/metadata.tsv" --variant no_graph
 ```
 
 `--graph_type` 控制图构建方式：
@@ -261,20 +237,21 @@ python -m glioma.cli.train_semantic_alignment --data_root "D:\dataset\脑肿瘤�
 
 ## 论文组合预设
 
-`glioma/config/paper_profiles.py` 提供三个模块组合预设：
+`glioma/config/paper_profiles.py` 提供以下论文组合预设：
 
 | 参数 | 模块组合 |
 |---|---|
 | `--paper_config paper1` | graph + diffusion |
 | `--paper_config paper2` | TopoMoE v2：shared units + disease-anchor topology；默认无 MRI graph/private/diffusion |
 | `--paper_config paper3` | diffusion + MoE |
+| `--paper_config paper4` | 测地或 SPD 融合，见[证据与参数](paper4/evidence.md) |
 
 示例：
 
 ```powershell
 python -m glioma.cli.train_semantic_alignment `
-  --data_root "D:\dataset\脑肿瘤数据集\公共数据集\UTSW-Glioma" `
-  --metadata_tsv "D:\dataset\脑肿瘤数据集\公共数据集\UTSW_Glioma_Metadata-2-1.tsv" `
+  --data_root "/path/to/UTSW-Glioma" `
+  --metadata_tsv "/path/to/metadata.tsv" `
   --variant full `
   --paper_config paper1 `
   --epochs 30 `
@@ -283,100 +260,21 @@ python -m glioma.cli.train_semantic_alignment `
 
 当 `--paper_config` 不为 `none` 且没有手动指定 `--out_dir` 时，结果会写入对应的 validation 输出目录。
 
-## 服务器启动脚本
+## 服务器后台运行
 
-项目根目录提供了服务器端启动脚本：
-
-```bash
-bash run_server_papers.sh
-```
-
-最小启动示例：
+从包含 glioma/ 的父目录执行。下面启动一次 Paper 2 TopoMoE 训练，输出目录和启动日志共用本次运行名。
 
 ```bash
-cd /path/to/PygMonAI/glioma
-
-DATA_ROOT=/root/autodl-tmp/UTSW-Glioma \
-METADATA_TSV=/root/autodl-tmp/UTSW_Glioma_Metadata-2-1.tsv \
-bash run_server_papers.sh
+run_dir="glioma/output/server_runs/paper2_$(date +%Y%m%d_%H%M%S)"
+mkdir -p "$run_dir"
+nohup python -u -m glioma.cli.train_semantic_alignment \
+  --paper_config paper2 --data_root /path/to/UTSW-Glioma \
+  --metadata_tsv /path/to/metadata.tsv --seed 42 --epochs 50 \
+  --out_dir "$run_dir/seed_42" > "$run_dir/launcher.log" 2>&1 < /dev/null &
+echo "PID=$!  LOG=$run_dir/launcher.log"
 ```
 
-默认只运行 `paper2` 的 TopoMoE v2 调参配置：20 epoch、完整测试评估、family-balanced route supervision 和 topology-refined prototypes。可以通过 `PAPER_CONFIGS` 显式选择其他 paper：
-
-```bash
-PAPER_CONFIGS="paper1 paper2 paper3" bash run_server_papers.sh
-```
-
-常用全局配置：
-
-```bash
-DATA_ROOT=/root/autodl-tmp/UTSW-Glioma \
-METADATA_TSV=/root/autodl-tmp/UTSW_Glioma_Metadata-2-1.tsv \
-RUN_NAME=glioma_main \
-OUTPUT_ROOT=/root/autodl-tmp/glioma_output \
-LOG_ROOT=/root/autodl-tmp/glioma_logs \
-PAPER_CONFIGS="paper2" \
-SEEDS="42" \
-PAPER2_EPOCHS=20 \
-BATCH_SIZE=4 \
-AUGMENT=1 \
-bash run_server_papers.sh
-```
-
-Paper 2 的 TopoMoE 参数可以单独覆盖：
-
-```bash
-PAPER2_TOPOMOE_VERSION=v2 \
-PAPER2_TOPO_MODE=prior_plus_learned \
-PAPER2_TOPO_EPSILON=1e-4 \
-PAPER2_TOPO_TEMPERATURE=1.0 \
-PAPER2_TOPO_BETA_INIT=0.1 \
-PAPER2_ROUTE_MIXTURE=log_prob \
-PAPER2_LAMBDA_FAMILY_ROUTE=0.3 \
-PAPER2_LAMBDA_WITHIN_ANCHOR=0.3 \
-PAPER2_LAMBDA_TOPO_PRIOR=0.05 \
-PAPER2_LAMBDA_TOPO_DELTA=0.001 \
-PAPER2_LAMBDA_SPECIALIZE=0.1 \
-PAPER2_LAMBDA_ANCHOR_FAMILY_BALANCE=0.05 \
-bash run_server_papers.sh
-```
-
-`PAPER2_ALIGN_MAX_CASES` 默认不设置，因此评估完整 test split；仅在快速调试时显式设置病例上限。
-
-拓扑消融建议分别设置不同的 `RUN_NAME` 运行 `prior_only`、`learned_only` 和 `prior_plus_learned`，避免结果互相覆盖。
-
-如果需要完全手动控制某个 paper 的模块组合，可将对应 `PAPER*_PAPER_CONFIG` 设为 `none`：
-
-```bash
-PAPER2_PAPER_CONFIG=none \
-PAPER2_TOPOMOE_VERSION=v2 \
-PAPER2_GRAPH_TYPE=learnable \
-PAPER2_MOE_MODULE=topo_moe \
-PAPER2_NO_PRIVATE=1 \
-PAPER2_NO_DIFFUSION=1 \
-bash run_server_papers.sh
-```
-
-`run_server_paper2_topomoe_full.sh` 默认运行 seeds `42 43 44`。全部成功后，launcher 自动调用 `glioma.cli.aggregate_topomoe_runs`，在 `<RUN_OUTPUT_ROOT>/aggregate/` 生成多 seed mean±SD、拓扑稳定性和干预汇总图。
-
-已有 hybrid baseline 完成后，可用新的 topology 消融 launcher 原地重建 baseline 聚合结果，并依次运行 `prior_only`、`learned_only` 和关闭 topology refinement 的三 seed 消融：
-
-```bash
-BASELINE_RUN_ROOT=/root/autodl-tmp/glioma/output/server_runs/<HYBRID_RUN_NAME> \
-DATA_ROOT=/root/autodl-tmp/UTSW-Glioma \
-METADATA_TSV=/root/autodl-tmp/UTSW_Glioma_Metadata-2-1.tsv \
-ABLATION_PREFIX=paper2_topology_ablation \
-nohup bash run_server_topology_ablations.sh > topology_ablations.log 2>&1 &
-```
-
-先设置 `DRY_RUN=1` 可只检查命令。launcher 默认使用 50 epoch 和 seeds `42 43 44`，不截断训练或测试病例；现有 hybrid checkpoint 不会被重新训练或修改。
-
-脚本会自动生成：
-
-- `output/server_runs/<RUN_NAME>/...`：每个 paper 和 seed 的实验输出
-- `logs/server_runs/<RUN_NAME>/...`：训练日志
-- `runs.tsv`：本轮任务的状态汇总
-- `gpu_<RUN_NAME>.csv`：如果服务器存在 `nvidia-smi`，会记录 GPU 使用情况
+多折修订实验使用[Paper 2 修订入口](paper2/experiments.md)。
 
 ## 常用参数
 

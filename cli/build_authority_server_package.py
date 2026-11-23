@@ -17,17 +17,15 @@ def build(output):
     files = {}
     # Explicit source directories, not an unrestricted recursive workspace archive.
     folders = ("anchors", "cli", "config", "data", "eval", "io", "models", "modules", "objectives",
-               "semantic", "tests", "training", "validation", "visualization")
+               "paper2_revision", "semantic", "tests", "training", "validation", "visualization")
     for folder in folders:
         for path in sorted((root / folder).rglob("*.py")):
             if "__pycache__" not in path.parts:
                 files["glioma/" + path.relative_to(root).as_posix()] = path.read_bytes()
-    for name in ("__init__.py", "authority_server.sh", "autodl_authority.sh", "AUTODL_AUTHORITY.md",
-                 "run_server_paper4_geodesic_full.sh", "requirements-authority.txt",
-                 "requirements-authority-server.txt", "PAPER4_AUTHORITY_GUIDE.md"):
+    for name in ("__init__.py", "requirements.txt", "docs/paper4/authority.md"):
         files["glioma/" + name] = (root / name).read_bytes()
     files["README.md"] = ("# ACF-SPD server package\n\n"
-                           "Start with glioma/PAPER4_AUTHORITY_GUIDE.md. Keep the folder name glioma.\n"
+                           "Start with glioma/docs/paper4/authority.md. Keep the folder name glioma.\n"
                            "510 formal trainings are prepared, not executed. Run development and freeze first.\n"
                            "Contains source and planned manifests only; no MRI data or existing experimental outputs.\n").encode()
     for name, jobs in (("development_manifest", development_jobs()), ("main_planned", formal_jobs("main")),
@@ -40,7 +38,7 @@ def build(output):
         for name, content in sorted(files.items()):
             info = zipfile.ZipInfo(name, date_time=(2026,9,9,0,0,0))
             info.compress_type = zipfile.ZIP_DEFLATED
-            info.external_attr = (0o755 if name.endswith(".sh") else 0o644) << 16
+            info.external_attr = 0o644 << 16
             archive.writestr(info, content)
     with zipfile.ZipFile(output) as archive:
         if archive.testzip() is not None:
