@@ -2,23 +2,32 @@
 
 ## 上传与启动
 
-将 `utsw_authority_server.zip` 上传后解压，进入 `glioma` 文件夹。原始 MRI 和 TSV 留在服务器自己的数据目录，不包含在代码包里。
+解压后保留 glioma/ 文件夹名，从其父目录运行。先安装适配 CUDA 的 PyTorch 构建，再安装 glioma/requirements.txt。原始 MRI 和 TSV 保存在服务器数据目录。
 
 ```bash
-unzip utsw_authority_server.zip -d utsw_authority_run
-cd utsw_authority_run/glioma
-python -m pip install -r requirements-utsw-authority.txt
-# 服务器应已安装适配 CUDA 的 PyTorch 2.8.0。
-DATA_ROOT=/root/autodl-tmp/dataset/UTSW-Glioma \
-METADATA=/root/autodl-tmp/dataset/UTSW_Glioma_Metadata-2-1.tsv \
-nohup bash run_utsw_authority.sh > launcher.log 2>&1 &
+data_root=/root/autodl-tmp/dataset/UTSW-Glioma
+metadata=/root/autodl-tmp/dataset/UTSW_Glioma_Metadata-2-1.tsv
+run_dir="glioma/output/utsw_authority_grade_$(date +%Y%m%d_%H%M%S)"
+mkdir -p "$run_dir"
+export CUBLAS_WORKSPACE_CONFIG=:4096:8
+
+nohup bash -e -c '
+  python -m pytest glioma/tests/test_utsw_authority.py -q
+  python -m glioma.cli.utsw_authority prepare --data-root "$1" --metadata "$2" --output "$3"
+  python -m glioma.cli.utsw_authority smoke --data-root "$1" --output "$3" --device cuda
+  python -m glioma.cli.utsw_authority controls --output "$3"
+  for fold in 0 1 2 3 4; do
+    for variant in acf learned_joint; do
+      python -m glioma.cli.utsw_authority train --output "$3" --fold "$fold" --variant "$variant" --device cuda
+    done
+  done
+  python -m glioma.cli.utsw_authority aggregate --output "$3"
+  python -m glioma.cli.package_utsw_authority results --output "$3"
+' _ "$data_root" "$metadata" "$run_dir" > "$run_dir/launcher.log" 2>&1 < /dev/null &
+echo "PID=$!  LOG=$run_dir/launcher.log"
 ```
 
-修改前两行数据路径即可。默认结果放在 `output/utsw_authority_grade`，进度写在其中的 `console.log`。同一命令可以从最后完成的 epoch 继续；已完成模型自动跳过。代码或规则改变后使用新的 `OUTPUT` 目录，不能混用旧结果。
-
-启动顺序：独立测试 → 全队列影像空间检查和缓存 → 六例训练集小批量学习检查 → 三个低成本对照 → 第 0 折两模型及验证检查 → 其余八次训练 → 汇总、配对区间、出图、打包。任一步失败立即停止。无需手工选择测试集病例或编辑图中数字。
-
-正式训练完成后回传 `output/utsw_authority_grade/results_for_paper.zip`。它包含逐患者预测、实际依赖与状态、完整规则审计、固定划分、汇总及图件，外加所选病例的缓存 ROI；不包含原始体积或大检查点。完整训练检查点留在服务器。
+恢复时使用原 run_dir。代码或规则有变更时使用新的运行目录。正式任务完成后在运行目录取 results_for_paper.zip，内含逐患者预测、规则审计、汇总和图件。
 
 ## 固定协议
 
