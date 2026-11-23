@@ -1,5 +1,7 @@
 # Idea2 投稿蓝图：2026-10-13 修订建议稿
 
+> **归档 · 历史留档。** 2026-10 投稿定位快照。当前实验证据见[结果核查](../paper2/results-2026-11-14.md)。
+
 当前优先级高于旧2026-08-05蓝图。旧版已原样备份于 `scratch/idea2_revision_20261013/PAPER2_NEUROCOMPUTING_BLUEPRINT.original.md`。本稿不代表新增实验已执行，也不保证特定期刊的创新性门槛已满足。
 
 ## Working title
@@ -60,12 +62,12 @@ If resources require screening, use the prechosen seed42 across all five folds a
 
 ## Sources and detailed revision draft
 
-See [PAPER2_REVIEW_TRANSFER_20261013.md](D:/code/pythonProject/PygMonAI/glioma/PAPER2_REVIEW_TRANSFER_20261013.md) for the reviewer mapping, derivations, proposed controls, literature links, and reusable positioning paragraphs.
+See [PAPER2_REVIEW_TRANSFER_20261013.md](PAPER2_REVIEW_TRANSFER_20261013.md) for the reviewer mapping, derivations, proposed controls, literature links, and reusable positioning paragraphs.
 
-Verified results: [实验结果整理.md](D:/code/pythonProject/PygMonAI/glioma/output/sever_paper2+paper4_20260824alloutput/整理结果_20260908/实验结果整理.md).
+Verified results: 实验结果整理.md（本地产物 `output/sever_paper2+paper4_20260824alloutput/整理结果_20260908/实验结果整理.md`）.
 
 ## Implementation status: 2026-10-13
 
 The supplemental protocol is implemented in the isolated `paper2_revision` package and new CLI entry points. Existing model, training, profile and server code is unchanged. It adds train-only frequency controls, static calibration, matched family-head factors, explicit supervision/candidate controls, published proxy-loss adaptations, protocol exports, nonidentity gate replay, paired aggregation and frozen external evaluation. These capabilities have been tested with synthetic NIfTI fixtures; new scientific results on the real cohort are not yet available.
 
-See [实验执行说明](D:/code/pythonProject/PygMonAI/glioma/PAPER2_REVISION_EXPERIMENTS.md) and [代码审查记录](D:/code/pythonProject/PygMonAI/glioma/PAPER2_REVISION_CODE_REVIEW.md). MGCA/RadZero official-system reproduction is not claimed by the implemented loss adaptations.
+See [实验执行说明](../paper2/experiments.md) and [代码审查记录](PAPER2_REVISION_CODE_REVIEW.md). MGCA/RadZero official-system reproduction is not claimed by the implemented loss adaptations.

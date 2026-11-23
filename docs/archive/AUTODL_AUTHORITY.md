@@ -1,5 +1,7 @@
 # AutoDL：从 GitHub 同步并后台运行
 
+> **归档 · 可删除。** 旧 AutoDL 启动说明。命令已合并至 [Authority 实验指南](../paper4/authority.md)；示例脚本已退役。
+
 适用于 AutoDL 算力市场的普通容器实例，在 JupyterLab Terminal 或 SSH 中操作。代码目录必须命名为 `glioma`，因为现有程序使用 `glioma.*` 包导入。
 
 ## 首次同步
@@ -87,7 +89,7 @@ CUDA_VISIBLE_DEVICES=0 bash autodl_authority.sh start all /root/autodl-tmp/autho
 
 运行期间不要 git pull，以免不同任务读取不同版本代码。需要改变模型/协议时应使用新的输出目录，程序会拒绝混用代码指纹。
 
-最终汇总位于输出目录的 `summary_main_attribution_rule_only/RESULTS.md`；训练历史位于 `development/`、`main/`、`attribution/`、`rule_only/`。检查点和逐样本干预记录只在所选 retention/artifact level 要求时保留。详细协议见 [PAPER4_AUTHORITY_GUIDE.md](PAPER4_AUTHORITY_GUIDE.md)。
+最终汇总位于输出目录的 `summary_main_attribution_rule_only/RESULTS.md`；训练历史位于 `development/`、`main/`、`attribution/`、`rule_only/`。检查点和逐样本干预记录只在所选 retention/artifact level 要求时保留。详细协议见 [PAPER4_AUTHORITY_GUIDE.md](../paper4/authority.md)。
 
 旧版完整输出可先做只读预览，再仅清理具有有效 `DONE.json` 且不带运行锁的任务：
 

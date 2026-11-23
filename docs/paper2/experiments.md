@@ -44,32 +44,17 @@ provided segmentation定义区域，空mask保留并计数；不能因此声称�
 
 ## 服务器执行
 
-从 `glioma` 目录运行，脚本自动使父目录可导入该包：
+从包含 glioma/ 的父目录运行。省略 --execute 只打印计划，默认 cheap 组包含 10 次频率基线。
 
 ```bash
-# 默认只打印10次低成本频率基线的计划，不启动训练。
-bash run_server_paper2_revision.sh
-
-# 先实际跑便宜对照；使用独立输出目录。
-EXECUTE=1 GROUP=cheap bash run_server_paper2_revision.sh
-
-# 原45次主矩阵中的direct_only根目录，仅作为只读参照。
-EXECUTE=1 GROUP=calibration REFERENCE_ROOT=/path/to/direct_only bash run_server_paper2_revision.sh
-
-# 同协议的4格机制对照，共5折×1seed×4=20次。
-EXECUTE=1 GROUP=mechanism bash run_server_paper2_revision.sh
-
-# 补另外3格监督消融，region_rules+on复用mechanism/separate_dynamic。
-EXECUTE=1 GROUP=supervision bash run_server_paper2_revision.sh
-
-# 按需运行全局/分类/直接参照以及已发表损失基线。
-EXECUTE=1 GROUP=baselines bash run_server_paper2_revision.sh
-EXECUTE=1 GROUP=published bash run_server_paper2_revision.sh
+python -m glioma.cli.run_paper2_revision \
+  --data_root /path/to/UTSW-Glioma --metadata_tsv /path/to/metadata.tsv \
+  --out_root glioma/output/paper2_revision --group cheap --num_workers 4
 ```
 
-可以传 `DATA_ROOT`、`METADATA_TSV`、`RUN_ROOT`、`SEEDS`、阶段epoch、batch和分割来源。先seed42，扩展seed43/44时只执行必要的组。`GROUP=screen`为14配置×5折=70次单seed探索计划，不默认启动，也不将其包装为先验确定的确认实验。
+通过计划核对后加 --execute；后台执行见[项目指南](../project.md#服务器后台运行)。mechanism 含 20 次训练；supervision 补另外三格监督对照；baselines 和 published 执行对应基线；screen 为 70 次单 seed 探索。使用 --seeds、--folds、--epochs、--router_epochs、--joint_epochs 和 --segmentation_source 声明实际预算与协议。
 
-复用旧direct检查点时，新入口验证train/val/test患者、完整词表、输入维度、ROI、影像配准偏好、温度、目标规则，以及检查点内词表。`REFERENCE_ROOT`使各新组沿用旧splits；改变为all_patient_anchors时仅复用划分，重新训练表征，避免不匹配目标的warm start。reference文件从不写入。
+calibration 需通过 --reference_root 指定既有 direct_only 根目录。复用检查点时会验证患者划分、词表、输入规格、温度及目标规则。all_patient_anchors 仅复用划分并重新训练表征。修订批次的汇总见[结果核查](results-2026-11-14.md)。
 
 单次观测字段消融示例，从包父目录运行：
 
@@ -100,7 +85,7 @@ python -m glioma.cli.aggregate_paper2_revision \
 
 新增测试覆盖正例与旧policy一致、未知候选屏蔽、OOV/空目标审计、train-only控制、已发表损失公式、无固定点置换、静态gate、家族内排序不变量、梯度、检查点冻结、协议不匹配拒绝、原入口兼容，以及真实NIfTI读取→训练→导出的闭环。
 
-审查重点：没有改旧默认值；输出不覆盖；验证不接触test选择；复用检查点先核验再创建输出；候选协议变更不混作同任务；聚合不静默删掉未匹配运行。测试统计与最终审查记录见 `PAPER2_REVISION_CODE_REVIEW.md`。
+审查重点：没有改旧默认值；输出不覆盖；验证不接触test选择；复用检查点先核验再创建输出；候选协议变更不混作同任务；聚合不静默删掉未匹配运行。测试统计与历史审查见[代码审查记录](../archive/PAPER2_REVISION_CODE_REVIEW.md)。
 
 独立医院/队列的性能验证仍需要相应数据，不会用合成夹具或同源proxy代替。冻结外部测试命令如下；患者ID必须经核查为全局唯一，相同患者被重新命名的重复病例无法仅靠代码发现。标签命名和分割协议也需核实可比。
 

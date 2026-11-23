@@ -1,7 +1,9 @@
 # Paper 4 Hierarchical SPD Manifold Fusion
 
+> **归档 · 历史留档。** 旧层次 SPD 主协议。后续实验和差异对照见 [Paper 4 证据总账](../paper4/evidence.md)。
+
 > This is the reproduction guide for the legacy hierarchical experiment. The
-> evidence audit and current ICLR protocol live in [PAPER4_GUIDE.md](PAPER4_GUIDE.md).
+> evidence audit and current ICLR protocol live in [PAPER4_GUIDE.md](../paper4/evidence.md).
 
 The new Paper 4 main path uses a two-level heterogeneous graph instead of
 feature-matrix concatenation:

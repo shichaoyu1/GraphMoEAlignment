@@ -1,5 +1,7 @@
 # Idea4.5 v2：补充核查、创新边界与最小实验协议
 
+> **归档 · 历史留档。** 旧 v2 协议已被 [v3 协议](../idea4-5/protocol.md) 替代。
+
 日期：2026-09-24。本文修订第一版研究设计；当时未实现新模型、未运行新训练。由 AI 辅助检索、原文阅读与独立方法审查形成。与 [Idea4.5 完整研究笔记](IDEA4_5_RESEARCH.md) 配套阅读。代码实现见 [Idea4.5 指南](IDEA4_5_GUIDE.md)。
 
 ## 1. 本轮完成了什么，判断发生了什么变化
@@ -14,7 +16,7 @@
 
 ## 2. 已补齐的两篇全文
 
-**CMoB，NeurIPS 2025。**已读取 §3.2–3.4、Eq.(1)–(5)、Algorithm 1。其贡献估计基于当前模型的完整、移除某模态与单模态预测收益，再选择性增强/遮蔽训练数据。它没有在这些核心方法定义中以“一次优化更新之后，另一可用组的风险变化”作为评分对象；这个区别可以保留，但后者已被 TAG 等多任务工作覆盖，不能因此宣布新颖。[正式页面](https://papers.nips.cc/paper_files/paper/2025/hash/76a0f4215050c7d4e88c03cb8a11fee6-Abstract-Conference.html)；[本地正式 PDF](D:/code/pythonProject/PygMonAI/glioma/reports/cmob_2025_source.pdf)
+**CMoB，NeurIPS 2025。**已读取 §3.2–3.4、Eq.(1)–(5)、Algorithm 1。其贡献估计基于当前模型的完整、移除某模态与单模态预测收益，再选择性增强/遮蔽训练数据。它没有在这些核心方法定义中以“一次优化更新之后，另一可用组的风险变化”作为评分对象；这个区别可以保留，但后者已被 TAG 等多任务工作覆盖，不能因此宣布新颖。[正式页面](https://papers.nips.cc/paper_files/paper/2025/hash/76a0f4215050c7d4e88c03cb8a11fee6-Abstract-Conference.html)；本地正式 PDF（本地产物 `reports/cmob_2025_source.pdf`）
 
 独立推理提醒：平均条件熵随额外信息不增，不意味着任意有限训练分类器的每个样本置信度都随模态增加而单调上升。本计划不采用逐样本置信度单调假设，而直接测量风险与更新后果。
 

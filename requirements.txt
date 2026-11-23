@@ -1,6 +1,18 @@
-torch>=2.0.0
-torchvision>=0.15.0
-nibabel>=5.0.0
-numpy>=1.24.0
-matplotlib>=3.7.0
-scipy>=1.10.0
+# GPU servers: install the appropriate torch/torchvision build first.
+torch>=2.0
+torchvision>=0.15
+
+# MRI loading, numerical experiments, and evaluation.
+nibabel>=5.0,<6
+numpy>=1.24,<3
+scipy>=1.10,<2
+pandas>=2.0,<3
+scikit-learn>=1.3,<1.8
+matplotlib>=3.7,<4
+pytest>=8,<9
+
+# General differentiable authority projection. Older Python can run S1/S2 analytically.
+cvxpy==1.6.5; python_version >= "3.11"
+cvxpylayers==0.1.9; python_version >= "3.11"
+diffcp==1.1.9; python_version >= "3.11"
+scs==3.3.1; python_version >= "3.11"

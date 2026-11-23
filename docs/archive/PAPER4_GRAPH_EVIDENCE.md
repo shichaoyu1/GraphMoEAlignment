@@ -1,8 +1,10 @@
 # Paper 4 Graph-Evidence Protocol
 
+> **归档 · 可删除。** 旧筛选与确认启动说明。当前参数与证据更新见 [Paper 4 证据总账](../paper4/evidence.md)。
+
 > This file preserves the legacy three-seed screen/confirm protocol. The ICLR
 > protocol that separates split and model seeds is documented in
-> [PAPER4_GUIDE.md](PAPER4_GUIDE.md) and launched by
+> [PAPER4_GUIDE.md](../paper4/evidence.md) and launched by
 > `run_server_paper4_iclr_evidence.sh`.
 
 Paper 4 uses modality-specific MRI encoders and Log-Euclidean SPD descriptors.
