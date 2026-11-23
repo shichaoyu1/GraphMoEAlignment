@@ -16,6 +16,8 @@ python -m glioma.cli.check_authority
 
 PyTorch 的 CUDA 构建应按服务器驱动选择；本机开发使用 PyTorch 2.8.0+cu126。安装方式见 [PyTorch 官方安装说明](https://pytorch.org/get-started/locally/)。通用投影采用 [CVXPYlayers](https://github.com/cvxpy/cvxpylayers)，本包固定 cvxpy 1.6.5 / cvxpylayers 0.1.9。该可选依赖链要求较新的 Python；原 Python 3.9 可运行原生解析 S1/S2 路径，但不能视作完成通用层验收。
 
+通用投影若报出旧的依赖文件名，请使用上面的统一安装命令。运行时文案留在原处，便于使用既有训练的源码指纹继续恢复。
+
 单卡按下面顺序执行。`/your/output/authority_v1` 换成服务器输出位置；所有阶段必须使用同一个正式输出根目录：
 
 ```bash

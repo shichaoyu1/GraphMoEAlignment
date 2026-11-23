@@ -50,7 +50,7 @@ def _convex_layer(classes, rows, simplex):
         import cvxpy as cp
         from cvxpylayers.torch import CvxpyLayer
     except ImportError as error:
-        raise RuntimeError("General constraints require the solver dependencies in requirements.txt (Python 3.11+)") from error
+        raise RuntimeError("General constraints require requirements-authority.txt") from error
     variable = cp.Variable(classes)
     initial = cp.Parameter(classes)
     B, b = cp.Parameter((rows, classes)), cp.Parameter(rows)
