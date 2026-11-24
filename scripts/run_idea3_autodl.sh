@@ -17,23 +17,33 @@ output=$(cd -- "$output" && pwd -P)
 exec 9>"$output/.run.lock"
 flock -n 9 || { echo "An Idea 3 run is already using $output" >&2; exit 1; }
 
-# The source is importable as glioma even when the checkout is named GraphMoEAlignment.
-mkdir -p -- "$output/import_root"
-if [[ ! -e "$output/import_root/glioma" && ! -L "$output/import_root/glioma" ]]; then
-  ln -s -- "$repo" "$output/import_root/glioma"
+# Remove only the link created by the previous launcher, while holding its run lock.
+legacy_link="$output/import_root/glioma"
+if [[ ! -L "$output/import_root" && -L "$legacy_link" && "$legacy_link" -ef "$repo" ]]; then
+  unlink -- "$legacy_link"
+  rmdir -- "$output/import_root" 2>/dev/null || true
 fi
-if [[ ! "$output/import_root/glioma" -ef "$repo" ]]; then
-  echo "Use an output directory associated with this checkout" >&2
-  exit 1
-fi
-export PYTHONPATH="$output/import_root${PYTHONPATH:+:$PYTHONPATH}"
+
+run_module() {
+  "$python_bin" -u "$repo/scripts/run_idea3_module.py" "$@"
+}
 
 if [[ "$matrix" == replay ]]; then
-  "$python_bin" -u -m glioma.cli.run_idea3_autodl_replay --data-root "$data_root" --metadata "$metadata" \
-    --pilot "${IDEA3_PILOT:?Set IDEA3_PILOT to the archived pilot experiment1 directory}" --output "$output/replay"
+  pilot=${IDEA3_PILOT:?Set IDEA3_PILOT to the archived pilot experiment1 directory}
+  replay_root="$output/replay"
+  if [[ ! -f "$replay_root/prepared/experiment1/manifest.json" ]]; then
+    run_module glioma.cli.idea3 prepare --data-root "$data_root" --metadata "$metadata" \
+      --output "$replay_root/prepared"
+  fi
+  run_module glioma.cli.replay_idea3_anchor --pilot "$pilot" --prepared "$replay_root/prepared/experiment1" \
+    --output "$replay_root/replay" --device cuda
+  for method in probe refit_raw; do
+    run_module glioma.cli.diagnose_idea3_anchor --predictions "$replay_root/replay/replay_predictions.csv" \
+      --candidate-method "$method" --output "$replay_root/diagnosis_$method"
+  done
 else
   if [[ ! -f "$output/prepared/experiment1/manifest.json" ]]; then
-    "$python_bin" -u -m glioma.cli.idea3 prepare --data-root "$data_root" --metadata "$metadata" \
+    run_module glioma.cli.idea3 prepare --data-root "$data_root" --metadata "$metadata" \
       --output "$output/prepared"
   else
     "$python_bin" -c 'import hashlib, json, sys; from pathlib import Path
@@ -43,6 +53,6 @@ if inputs["data_root"] != str(root.resolve()) or inputs["metadata_sha256"] != ha
     sys.exit("Prepared inputs changed. Choose a fresh IDEA3_OUTPUT directory.")' \
       "$output/prepared/experiment1/manifest.json" "$data_root" "$metadata"
   fi
-  "$python_bin" -u -m glioma.cli.train_idea3_matched --prepared "$output/prepared/experiment1" \
+  run_module glioma.cli.train_idea3_matched --prepared "$output/prepared/experiment1" \
     --output "$output/$matrix" --matrix "$matrix" --device cuda
 fi

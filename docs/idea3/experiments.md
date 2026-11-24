@@ -64,6 +64,8 @@ echo "PID=$!"
 
 可通过 `IDEA3_DATA_ROOT`、`IDEA3_METADATA`、`IDEA3_PYTHON` 和 `IDEA3_OUTPUT` 覆盖默认路径。同一目录重跑时会跳过已经完整写出的训练组。验证和全量使用实例中装好 CUDA PyTorch 及项目依赖的环境。
 
+启动器直接从当前 checkout 加载 Python 包。更新后首次使用原输出目录启动时，如果没有其他运行占用该目录，启动器会清理指回当前 checkout 的旧 `import_root/glioma` 符号链接。既有检查点、日志和缓存可继续使用。
+
 ## 原始先导实验运行方式
 
 从 `glioma` 的父目录运行，使用已安装项目依赖的 Python 环境。
