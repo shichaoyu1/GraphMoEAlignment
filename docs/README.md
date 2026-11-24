@@ -9,6 +9,7 @@
 | Paper 4 测地与 SPD 图融合 | [证据总账及运行参数](paper4/evidence.md)、[英文稿结构](paper4/manuscript.md) |
 | Paper 4 合成 authority 实验 | [模型、服务器运行及汇总](paper4/authority.md) |
 | UTSW 分子证据约束分级 | [数据审计、训练及结果打包](paper4/utsw-authority.md) |
+| Idea 3 锚点对齐与 MRI 互补信息 | [先导实验运行及结果口径](idea3/experiments.md) |
 | Idea4.5 模态可用性 | [v3 实验协议、数据格式及运行命令](idea4-5/protocol.md) |
 
 已删除的 shell 启动脚本可从 Git 历史追溯。当前文档直接调用 `python -m glioma.cli.*`。
