@@ -3,8 +3,8 @@ set -euo pipefail
 
 matrix=${1:-verify}
 case "$matrix" in
-  verify|full|replay) ;;
-  *) echo "Usage: bash $0 [verify|full|replay]" >&2; exit 2 ;;
+  verify|screen|full|replay) ;;
+  *) echo "Usage: bash $0 [verify|screen|full|replay]" >&2; exit 2 ;;
 esac
 
 repo=$(cd -- "$(dirname -- "$0")/.." && pwd -P)
@@ -53,6 +53,10 @@ if inputs["data_root"] != str(root.resolve()) or inputs["metadata_sha256"] != ha
     sys.exit("Prepared inputs changed. Choose a fresh IDEA3_OUTPUT directory.")' \
       "$output/prepared/experiment1/manifest.json" "$data_root" "$metadata"
   fi
-  run_module glioma.cli.train_idea3_matched --prepared "$output/prepared/experiment1" \
-    --output "$output/$matrix" --matrix "$matrix" --device cuda
+  if [[ "$matrix" == screen ]]; then
+    run_module glioma.cli.screen_idea3_matched --prepared "$output/prepared/experiment1" --output "$output"
+  else
+    run_module glioma.cli.train_idea3_matched --prepared "$output/prepared/experiment1" \
+      --output "$output/$matrix" --matrix "$matrix" --device cuda
+  fi
 fi
