@@ -41,6 +41,7 @@ class Configuration:
     fixed_weight: float = None
     epsilon: float = None
     task: str = 'sensors'
+    teacher_mode: str = 'top8'
 
 
 def fingerprint(path):
@@ -139,12 +140,17 @@ def configuration(output, config):
 
 def run(args):
     config = Configuration(**{key: getattr(args, key) for key in Configuration.__dataclass_fields__})
+    initial_policy = getattr(args, 'init_policy', None)
     if config.method.endswith('epsilon'):
         config.fixed_weight = .5
         if config.epsilon is None or not 0 <= config.epsilon <= 1:
             raise ValueError('Epsilon training requires --epsilon in [0,1]')
-    if config.group < 2 or config.noise <= 0 or config.steps < 1 or config.warmup < 1 or config.updates < 1:
+    if config.group < 2 or config.noise <= 0 or config.steps < 1 or config.warmup < 0 or config.updates < 1:
         raise ValueError('Require positive budgets/noise and group >= 2')
+    if config.warmup == 0 and initial_policy is None:
+        raise ValueError('Zero warmup requires --init-policy pointing to a supervised checkpoint')
+    if config.teacher_mode not in ('top8', 'best'):
+        raise ValueError('teacher-mode must be top8 or best')
     if min(config.batch, config.k, config.proposals, config.validate_every, config.eval_repeats, config.test_repeats) < 1:
         raise ValueError('Batch size, evidence/proposal counts and evaluation budgets must be positive')
     if config.local_steps < 0 or config.lr <= 0 or not 0 <= config.fold < 5:
@@ -155,6 +161,8 @@ def run(args):
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     signature = asdict(config)
+    if initial_policy is not None:
+        signature['initial_policy_hash'] = fingerprint(initial_policy)
     seed_all(config.seed)
     if args.command == 'controlled':
         train = ControlledEnvironment(config.task, device)
@@ -195,6 +203,20 @@ def run(args):
                             direct=config.method.startswith('direct')).to(device)
     policy.selection_k = config.k
     policy.greedy = config.method == 'direct_sft'
+    if initial_policy is not None:
+        initial = torch.load(initial_policy, map_location=device, weights_only=True)
+        for key in ('seed', 'fold', 'k', 'steps', 'noise'):
+            if initial['config'][key] != getattr(config, key):
+                raise ValueError(f'Initial checkpoint has incompatible {key}')
+        if initial['config']['method'].startswith('direct') != policy.direct:
+            raise ValueError('Initial checkpoint uses a different policy family')
+        if args.command == 'controlled' and initial['config']['task'] != config.task:
+            raise ValueError('Initial checkpoint comes from a different controlled task')
+        if args.command == 'train':
+            previous = json.loads((initial_policy.parent / 'config.json').read_text(encoding='utf-8'))
+            if previous.get('tokens_hash') != signature['tokens_hash']:
+                raise ValueError('Initial checkpoint uses a different frozen MRI token archive')
+        policy.load_state_dict(initial['model'])
 
     def checkpoint(update, model, optimizer, reference, history, best_score, best_state, dual):
         save_checkpoint(output / 'last.pt', update=update, model=model.state_dict(), optimizer=optimizer.state_dict(),
@@ -238,6 +260,7 @@ def main():
         current.add_argument('--output', type=Path, required=True)
         current.add_argument('--device', default='cuda')
         current.add_argument('--tokens', type=Path)
+        current.add_argument('--init-policy', type=Path)
         for key, field in Configuration.__dataclass_fields__.items():
             flag = '--' + key.replace('_', '-')
             value = field.default

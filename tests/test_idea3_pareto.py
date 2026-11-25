@@ -2,7 +2,7 @@ import numpy as np
 import torch
 import pytest
 from glioma.cli.idea3_pareto import Configuration
-from glioma.training.idea3_pareto import METHODS, optimize, evaluate, clipped_trajectory_objective
+from glioma.training.idea3_pareto import METHODS, optimize, evaluate, clipped_trajectory_objective, demonstration
 from glioma.cli.idea3_pareto import prepare, run
 from glioma.models.idea3_pareto import TokenGradeReadout
 from glioma.data.utsw_authority import GradeEvidence, features, molecular_record
@@ -33,6 +33,21 @@ def test_balanced_loss_masks_missing_values():
     weights = balanced_weights(targets)
     assert weights[2, 1] == 0
     assert torch.allclose((weights * .25).sum(-1).mean(), torch.tensor(.25))
+
+
+@pytest.mark.parametrize('weight', [0., .5, 1.])
+def test_best_demonstrations_exclude_suboptimal_padding(weight):
+    torch.manual_seed(42)
+    environment = ControlledEnvironment('sensors', 'cpu')
+    environment.teacher_masks = environment.masks[None].expand(2, -1, -1)
+    environment.teacher_losses = environment.risk_table
+    ids = torch.arange(2).repeat_interleave(32)
+    preference = torch.full((len(ids),), weight)
+    target = demonstration(environment, ids, preference, 4, 70, mode='best')
+    loss = environment.losses(ids, target.topk(4, -1).indices)
+    weights = torch.tensor([weight, 1 - weight])
+    minimum = (environment.teacher_losses * weights).sum(-1).min(-1).values
+    assert torch.allclose((loss * weights).sum(-1), minimum[ids], atol=1e-6)
 
 
 def test_gaussian_probability_has_gradient_and_matches_density():
@@ -142,3 +157,22 @@ def test_mri_prepare_train_and_resume_entrypoint(tmp_path):
     pd.testing.assert_frame_equal(before_resume, pd.read_csv(output / 'predictions.csv'))
     analyze(tmp_path / 'main', tmp_path / 'analysis', 100)
     assert (tmp_path / 'analysis' / 'risk_curves.pdf').is_file()
+
+
+def test_existing_checkpoint_can_fork_without_repeating_warmup(tmp_path):
+    torch.set_num_threads(2)
+    config = Configuration(method='moe_sft', warmup=1, updates=1, batch=2, group=2, steps=2, k=4,
+                           proposals=4, local_steps=0, validate_every=2, eval_repeats=2, test_repeats=2)
+    policy = EvidencePolicy(8, 2, experts=3)
+    initial = tmp_path / 'initial.pt'
+    torch.save({'model': policy.state_dict(), 'config': vars(config)}, initial)
+    config.warmup, config.updates, config.teacher_mode = 0, 2, 'best'
+    args = Namespace(**vars(config), command='controlled', output=tmp_path / 'fork', device='cpu',
+                     init_policy=initial)
+    run(args)
+    summary = json.loads((args.output / 'summary.json').read_text())
+    assert summary['history'][0]['update'] == 0 and summary['history'][0]['loss'] is None
+    assert summary['history'][-1]['update'] == 2
+    args.init_policy = None
+    with pytest.raises(ValueError, match='Zero warmup'):
+        run(args)

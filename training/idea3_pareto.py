@@ -81,12 +81,19 @@ def build_demonstrations(environment, k, proposals, local_steps):
         environment.teacher_losses = torch.cat(scores, 1)
 
 
-def demonstration(environment, ids, preference, k, proposals):
+def demonstration(environment, ids, preference, k, proposals, mode='top8'):
     with torch.no_grad():
         losses = environment.teacher_losses[ids] / environment.scales
         weights = torch.stack([preference, 1 - preference], -1)
-        best = (losses * weights[:, None]).sum(-1).topk(min(8, losses.shape[1]), largest=False).indices
-        chosen = best.gather(1, torch.randint(best.shape[1], (len(ids), 1), device=ids.device)).squeeze(1)
+        costs = (losses * weights[:, None]).sum(-1)
+        if mode == 'best':
+            eligible = costs <= costs.min(-1, keepdim=True).values + 1e-6
+            chosen = torch.multinomial(eligible.float(), 1).squeeze(1)
+        elif mode == 'top8':
+            best = costs.topk(min(8, losses.shape[1]), largest=False).indices
+            chosen = best.gather(1, torch.randint(best.shape[1], (len(ids), 1), device=ids.device)).squeeze(1)
+        else:
+            raise ValueError(f'Unknown demonstration mode {mode}')
         selected = environment.teacher_masks[ids, chosen]
         return torch.full((len(ids), environment.items), -1., device=ids.device).scatter_(1, selected, 1.)
 
@@ -112,6 +119,18 @@ def rollout(policy, environment, preference, config):
     return ids, prefs, logits, states, actions, loss
 
 
+def validation_metrics(policy, environment, config):
+    weights = np.linspace(0, 1, 11) if config.fixed_weight is None else [config.fixed_weight]
+    _, points = evaluate(policy, environment, weights, config.eval_repeats,
+                         config.steps, config.noise, config.k, 2026)
+    volume = hypervolume(points)
+    score = volume if config.fixed_weight is None else -float(scalar_risk(
+        environment.scales.new_tensor(points[0]), environment.scales.new_tensor(config.fixed_weight), environment.scales))
+    if config.method.endswith('epsilon'):
+        score = -points[0][0] - 100 * max(0., points[0][1] - config.epsilon)
+    return volume, score
+
+
 def optimize(policy, train, validation, config, callback=None, resume=None):
     build_demonstrations(train, config.k, config.proposals, config.local_steps)
     reference = deepcopy(policy).requires_grad_(False)
@@ -119,6 +138,11 @@ def optimize(policy, train, validation, config, callback=None, resume=None):
     best, best_state, history = -float('inf'), None, []
     dual = 0.
     start = 0
+    if config.warmup == 0 and resume is None:
+        volume, best = validation_metrics(policy, validation, config)
+        best_state = deepcopy(policy.state_dict())
+        history.append({'update': 0, 'loss': None, 'validation_hv': volume,
+                        'selection_score': best, 'diagnostics': {'phase': 'initial_checkpoint'}})
     if resume is not None:
         policy.load_state_dict(resume['model'])
         reference.load_state_dict(resume['reference'])
@@ -140,7 +164,7 @@ def optimize(policy, train, validation, config, callback=None, resume=None):
         if update < config.warmup or config.method.endswith('sft'):
             ids = torch.randint(len(train.context), (config.batch,), device=train.context.device)
             prefs = train.context.new_full((len(ids),), preference)
-            target = demonstration(train, ids, prefs, config.k, config.proposals)
+            target = demonstration(train, ids, prefs, config.k, config.proposals, config.teacher_mode)
             loss = supervised_loss(policy, train.context[ids], prefs, target)
         else:
             # Independent block estimates the population objective before scalarization.
@@ -221,14 +245,7 @@ def optimize(policy, train, validation, config, callback=None, resume=None):
         if update + 1 == config.warmup:
             reference.load_state_dict(policy.state_dict())
         if (update + 1) % config.validate_every == 0 or update + 1 == config.warmup + config.updates:
-            weights = np.linspace(0, 1, 11) if config.fixed_weight is None else [config.fixed_weight]
-            _, points = evaluate(policy, validation, weights, config.eval_repeats,
-                                 config.steps, config.noise, config.k, 2026)
-            volume = hypervolume(points)
-            score = volume if config.fixed_weight is None else -float(scalar_risk(
-                validation.scales.new_tensor(points[0]), validation.scales.new_tensor(config.fixed_weight), validation.scales))
-            if config.method.endswith('epsilon'):
-                score = -points[0][0] - 100 * max(0., points[0][1] - config.epsilon)
+            volume, score = validation_metrics(policy, validation, config)
             history.append({'update': update + 1, 'loss': float(loss.detach()), 'validation_hv': volume,
                             'selection_score': score, 'diagnostics': diagnostics})
             if score > best:
