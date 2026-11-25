@@ -2,7 +2,7 @@ import numpy as np
 import torch
 import pytest
 from glioma.cli.idea3_pareto import Configuration
-from glioma.training.idea3_pareto import METHODS, optimize, evaluate
+from glioma.training.idea3_pareto import METHODS, optimize, evaluate, clipped_trajectory_objective
 from glioma.cli.idea3_pareto import prepare, run
 from glioma.models.idea3_pareto import TokenGradeReadout
 from glioma.data.utsw_authority import GradeEvidence, features, molecular_record
@@ -54,6 +54,26 @@ def test_population_scalarization_differs_from_patient_scalarization():
     risks = torch.tensor([[0., 1.], [1., 0.]])
     weight = torch.tensor(.5)
     assert scalar_risk(risks.mean(0), weight, torch.ones(2)) < scalar_risk(risks, weight, torch.ones(2)).mean()
+
+
+@pytest.mark.parametrize('steps', [2, 8])
+def test_terminal_reward_gradient_does_not_shrink_with_denoising_steps(steps):
+    torch.manual_seed(42)
+    torch.set_num_threads(2)
+    model = EvidencePolicy(items=1, context=1, width=4)
+    for parameter in model.parameters():
+        parameter.data.zero_()
+    context = torch.zeros(2048, 1)
+    preference = torch.full((len(context),), .5)
+    with torch.no_grad():
+        terminal, states, actions, _ = model.sample(context, preference, steps=steps, noise=.1)
+        # Removing the initial noise is an action-independent baseline.
+        reward = terminal[:, 0] - states[:, 0, 0]
+    log_probability = model.log_probability(states, actions, context, preference, .1)
+    objective = clipped_trajectory_objective(log_probability, log_probability.detach(), reward)
+    gradient = torch.autograd.grad(objective, model.experts[0][-1].bias)[0].item()
+    # E[terminal] equals the shared velocity bias for every trajectory length.
+    assert gradient == pytest.approx(1., abs=.1)
 
 
 def test_token_grade_readonly_and_evidence_revocation():

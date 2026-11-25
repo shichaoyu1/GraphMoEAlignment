@@ -12,6 +12,13 @@ METHODS = ('dense_sft', 'moe_sft', 'dense_pg', 'moe_pg', 'dense_nft', 'moe_nft',
            'direct_pg', 'direct_sft', 'dense_epsilon')
 
 
+def clipped_trajectory_objective(log_probability, old_log_probability, advantage):
+    ratio = (log_probability - old_log_probability).exp()
+    terms = torch.minimum(ratio * advantage[:, None], ratio.clamp(.8, 1.2) * advantage[:, None])
+    # Terminal returns multiply the sum of transition scores for one trajectory.
+    return terms.sum(1).mean()
+
+
 def scalar_risk(risks, preference, scales, linear=False):
     weighted = (risks / scales + .05) * torch.stack([preference, 1 - preference], -1)
     return weighted.sum(-1) if linear else .05 * torch.logsumexp(weighted / .05, -1)
@@ -124,6 +131,7 @@ def optimize(policy, train, validation, config, callback=None, resume=None):
         random.setstate(resume['python_rng'])
         dual = resume.get('dual', 0.)
     for update in range(start, config.warmup + config.updates):
+        diagnostics = {}
         preference = float(np.random.uniform())
         if np.random.uniform() < .1:
             preference = float(np.random.randint(2))
@@ -146,6 +154,10 @@ def optimize(policy, train, validation, config, callback=None, resume=None):
                 dual = max(0., dual + .1 * (float(risks[1].detach()) - config.epsilon))
                 alpha = risks.new_tensor([1 / float(train.scales[0]), dual])
             ids, prefs, clean, states, actions, values = rollout(policy, train, preference, config)
+            diagnostics['population_risk'] = estimate.mean(0).cpu().tolist()
+            diagnostics['risk_coefficients'] = alpha.cpu().tolist()
+            diagnostics['within_group_reward_std'] = values.reshape(config.batch, config.group, 2).std(
+                1, unbiased=False).mean(0).cpu().tolist()
             if config.method.endswith('nft'):
                 rewards = (-values / train.scales).reshape(config.batch, config.group, 2)
                 advantages = ((rewards - rewards.mean(1, keepdim=True)) /
@@ -176,8 +188,7 @@ def optimize(policy, train, validation, config, callback=None, resume=None):
                 context = train.context[ids]
                 old_log = policy.log_probability(states, actions, context, prefs, config.noise).detach()
                 log_probability = policy.log_probability(states, actions, context, prefs, config.noise)
-                ratio = (log_probability - old_log).exp()
-                objective = torch.minimum(ratio * advantage[:, None], ratio.clamp(.8, 1.2) * advantage[:, None])
+                objective = clipped_trajectory_objective(log_probability, old_log, advantage)
                 trajectory_steps = states.shape[1]
                 times = torch.arange(trajectory_steps, device=ids.device).expand(len(ids), -1) / trajectory_steps
                 contexts = context[:, None].expand(-1, trajectory_steps, -1).flatten(0, 1)
@@ -196,12 +207,16 @@ def optimize(policy, train, validation, config, callback=None, resume=None):
                     kl = torch.stack(kl_terms).sum(0).mean()
                 else:
                     kl = (velocity - reference_velocity).square().sum(-1).mean() / (2 * config.steps * config.noise ** 2)
-                loss = -objective.mean() + 1e-4 * kl
+                loss = -objective + 1e-4 * kl
+                diagnostics['advantage_std'] = float(advantage.std(unbiased=False))
+                diagnostics['reference_kl'] = float(kl.detach())
+                diagnostics['trajectory_steps'] = trajectory_steps
         if not torch.isfinite(loss):
             raise FloatingPointError(f'Nonfinite loss at update {update}')
         optimizer.zero_grad()
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(policy.parameters(), 1.)
+        gradient_norm = torch.nn.utils.clip_grad_norm_(policy.parameters(), 1.)
+        diagnostics['gradient_norm_before_clip'] = float(gradient_norm)
         optimizer.step()
         if update + 1 == config.warmup:
             reference.load_state_dict(policy.state_dict())
@@ -215,7 +230,7 @@ def optimize(policy, train, validation, config, callback=None, resume=None):
             if config.method.endswith('epsilon'):
                 score = -points[0][0] - 100 * max(0., points[0][1] - config.epsilon)
             history.append({'update': update + 1, 'loss': float(loss.detach()), 'validation_hv': volume,
-                            'selection_score': score})
+                            'selection_score': score, 'diagnostics': diagnostics})
             if score > best:
                 best, best_state = score, deepcopy(policy.state_dict())
             if callback:
