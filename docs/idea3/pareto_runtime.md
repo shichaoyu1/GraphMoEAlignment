@@ -96,6 +96,8 @@ bash scripts/run_idea3_pareto_autodl.sh analyze --bootstrap 10000
 
 默认训练为共同读出 30 epochs、监督 4000 步、后训练 1000 步。可通过 IDEA3_READER_EPOCHS、IDEA3_SUPERVISED_UPDATES、IDEA3_POST_UPDATES 覆盖，变化时另选输出目录。脚本先核对归档与数据路径，并在同一输出根加锁。真实病例的双目标取舍、缺失标签、选中 token 的内容依赖和资源成本需要在先导结果中核对，再决定完整五折三种子矩阵。
 
+MRI 读出器使用分轴切片求均值构造 4×4×4 token 网格，避免 CUDA AdaptiveAvgPool3d 的反向传播与严格确定性设置冲突。池化分箱、输出形状和参数键保持一致，前向与梯度按浮点容差核对；全局严格确定性设置保留。此修复改变源代码哈希，首次失败运行的 config.json 不应修改或删除。重跑时用新的 IDEA3_PARETO_OUTPUT（例如 output/idea3_pareto_mri_pilot_poolfix），并设置 IDEA3_PREPARED 指向旧运行的 prepared_images/experiment1，复用已完成的影像缓存。
+
 4000 步监督验证后，可直接复用已经训练好的监督权重。controlled 和 train 支持 --init-policy 指向 best.pt，配合 --warmup 0 跳过重复预热。加载时核对折、种子、证据预算、生成步数、采样噪声与模型形状，MRI 训练还核对冻结 token 文件哈希。初始权重会先接受验证并作为更新 0 的候选检查点，后训练退步时能够保留原权重。预训练成本与分叉成本分别报告。
 
 示范策略默认为 top8，保留此前实验定义。--teacher-mode best 改为仅在候选库里最优得分 1e-6 容差内采样，解决最优候选不足 8 个时混入次优示范的问题。这改变了监督目标，需要使用新输出目录并标注新协议。它仅保证在当前候选库内最优，不保证全局前沿覆盖。

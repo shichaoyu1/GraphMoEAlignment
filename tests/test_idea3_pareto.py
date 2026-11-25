@@ -4,7 +4,7 @@ import pytest
 from glioma.cli.idea3_pareto import Configuration
 from glioma.training.idea3_pareto import METHODS, optimize, evaluate, clipped_trajectory_objective, demonstration
 from glioma.cli.idea3_pareto import prepare, run
-from glioma.models.idea3_pareto import TokenGradeReadout
+from glioma.models.idea3_pareto import TokenGradeReadout, TokenGridPool, TokenReader
 from glioma.data.utsw_authority import GradeEvidence, features, molecular_record
 from glioma.cli.idea3_authority import withdraw_report
 from glioma.cli.analyze_idea3_pareto import analyze
@@ -16,6 +16,46 @@ from glioma.data.idea3_pareto import ControlledEnvironment, balanced_weights
 from glioma.eval.idea3_pareto import exact_oracle, hypervolume
 from glioma.models.idea3_pareto import EvidencePolicy
 from glioma.training.idea3_pareto import scalar_risk
+
+
+@pytest.mark.parametrize('shape', [(2, 3, 2, 3, 1), (1, 2, 8, 12, 8), (1, 2, 5, 7, 9)])
+def test_token_grid_pool_matches_adaptive_values_and_gradients(shape):
+    values = torch.randn(shape, dtype=torch.float64, requires_grad=True)
+    reference = torch.nn.functional.adaptive_avg_pool3d(values, 4)
+    actual = TokenGridPool()(values)
+    upstream = torch.randn_like(reference)
+    expected_gradient = torch.autograd.grad(reference, values, upstream)[0]
+    actual_gradient = torch.autograd.grad(actual, values, upstream)[0]
+    torch.testing.assert_close(actual, reference, atol=1e-12, rtol=1e-12)
+    torch.testing.assert_close(actual_gradient, expected_gradient, atol=1e-12, rtol=1e-12)
+
+
+@pytest.mark.parametrize('device', ['cpu', 'cuda'])
+def test_token_reader_strict_deterministic_backward(device):
+    if device == 'cuda' and not torch.cuda.is_available():
+        pytest.skip('CUDA unavailable')
+    from glioma.cli.utsw_authority import seed_all
+
+    deterministic = torch.are_deterministic_algorithms_enabled()
+    warn_only = torch.is_deterministic_algorithms_warn_only_enabled()
+    try:
+        seed_all(42)
+        reader = TokenReader().to(device)
+        images = torch.randn(2, 4, 16, 24, 32, device=device)
+        indices = torch.arange(8, device=device).expand(2, -1)
+        gradients = []
+        for _ in range(2):
+            reader.zero_grad(set_to_none=True)
+            tokens = reader.encode(images)
+            assert tokens.shape == (2, 64, 64)
+            reader(tokens, indices).square().sum().backward()
+            gradients.append(reader.encoder[0].weight.grad.clone())
+        assert gradients[0].isfinite().all() and gradients[0].abs().sum() > 0
+        assert torch.equal(*gradients)
+        assert torch.are_deterministic_algorithms_enabled()
+        assert not torch.is_deterministic_algorithms_warn_only_enabled()
+    finally:
+        torch.use_deterministic_algorithms(deterministic, warn_only=warn_only)
 
 
 def test_controlled_oracle_and_common_optimum():

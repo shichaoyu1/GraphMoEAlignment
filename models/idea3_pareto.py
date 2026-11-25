@@ -7,12 +7,29 @@ from glioma.data.utsw_authority import compile_grade, FEATURE_DIM
 from glioma.modules.authority_projection import project_allowed_simplex
 
 
+class TokenGridPool(nn.Module):
+    """Adaptive 4x4x4 averages using reductions with deterministic CUDA backward."""
+
+    def forward(self, values):
+        # Adaptive pooling bins may overlap, including when an axis is smaller than 4.
+        # Separable slice means preserve those bins without CUDA's atomic pool backward.
+        for axis in (-3, -2, -1):
+            size = values.shape[axis]
+            bins = []
+            for index in range(4):
+                start = index * size // 4
+                end = ((index + 1) * size + 3) // 4
+                bins.append(values.narrow(axis, start, end - start).mean(axis, keepdim=True))
+            values = torch.cat(bins, dim=axis)
+        return values
+
+
 class TokenReader(nn.Module):
     def __init__(self, width=64):
         super().__init__()
         self.encoder = nn.Sequential(nn.Conv3d(4, 16, 5, 2, 2), nn.GroupNorm(4, 16), nn.SiLU(),
                                      nn.Conv3d(16, 32, 3, 2, 1), nn.GroupNorm(4, 32), nn.SiLU(),
-                                     nn.Conv3d(32, width, 3, 2, 1), nn.SiLU(), nn.AdaptiveAvgPool3d(4))
+                                     nn.Conv3d(32, width, 3, 2, 1), nn.SiLU(), TokenGridPool())
         self.head = nn.Sequential(nn.Linear(width * 2, 64), nn.SiLU(), nn.Linear(64, 4))
 
     def encode(self, images):
