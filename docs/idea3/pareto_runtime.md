@@ -90,6 +90,12 @@ bash scripts/run_idea3_pareto_autodl.sh analyze --bootstrap 10000
 
 ## 当前实现与完整论文协议
 
+成熟初始化的八个分叉任务已在 seed42 的受控环境完成。NFT 相对于 top8 继续监督的 HV 增量为共同最优约 0.01779、传感器约 0.00320。传感器已选 NFT 检查点的最大 oracle 覆盖距离约 0.8657，整条前沿覆盖仍待验证。仅按 HV 选模也可能舍弃覆盖更好的末次检查点，后续同时保留并报告两者。
+
+真实 MRI 可以先进入单折单种子的先导。bash scripts/run_idea3_pareto_mri_pilot_autodl.sh 默认运行 fold0、seed42，包括公共读出器、三种监督策略、dense_nft/moe_nft/moe_pg 的成熟初始化后训练、三个固定偏好 PG 参考和配对分析，共九个 selector 配置。监督策略沿用 top8，最优示范作为独立实验分支保留。默认输出为 output/idea3_pareto_mri_pilot；fold0 测试队列预计为 37 名有表型标签的患者。统计标记为 partial_fold_diagnostic，不能将其区间外推为五折结论。
+
+默认训练为共同读出 30 epochs、监督 4000 步、后训练 1000 步。可通过 IDEA3_READER_EPOCHS、IDEA3_SUPERVISED_UPDATES、IDEA3_POST_UPDATES 覆盖，变化时另选输出目录。脚本先核对归档与数据路径，并在同一输出根加锁。真实病例的双目标取舍、缺失标签、选中 token 的内容依赖和资源成本需要在先导结果中核对，再决定完整五折三种子矩阵。
+
 4000 步监督验证后，可直接复用已经训练好的监督权重。controlled 和 train 支持 --init-policy 指向 best.pt，配合 --warmup 0 跳过重复预热。加载时核对折、种子、证据预算、生成步数、采样噪声与模型形状，MRI 训练还核对冻结 token 文件哈希。初始权重会先接受验证并作为更新 0 的候选检查点，后训练退步时能够保留原权重。预训练成本与分叉成本分别报告。
 
 示范策略默认为 top8，保留此前实验定义。--teacher-mode best 改为仅在候选库里最优得分 1e-6 容差内采样，解决最优候选不足 8 个时混入次优示范的问题。这改变了监督目标，需要使用新输出目录并标注新协议。它仅保证在当前候选库内最优，不保证全局前沿覆盖。
