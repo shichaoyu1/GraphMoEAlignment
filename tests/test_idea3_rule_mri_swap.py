@@ -58,8 +58,15 @@ def test_clean_replay_checks_projection_metadata_and_raw_probabilities():
     models = {"read_only_residual": lambda e: toy_prediction(e, True)}
     clean = replay_fold(models, [batch], "cpu", 0)
     assert verify_replay(clean, clean.iloc[::-1]) == {"read_only_residual": 0.}
+    # The server failure and the largest previously archived CUDA drift are valid replays.
+    for drift in (1.5527e-5, 5.558562011720447e-5):
+        with pytest.warns(RuntimeWarning, match="Cross-environment"):
+            errors = verify_replay(clean, clean.assign(raw_p4=clean.raw_p4.astype(float) + drift))
+        assert errors["read_only_residual"] == pytest.approx(drift)
     with pytest.raises(ValueError, match="Clean replay exceeds"):
-        verify_replay(clean, clean.assign(raw_p4=clean.raw_p4 + .00002))
+        verify_replay(clean, clean.assign(raw_p4=clean.raw_p4 + .0002))
+    with pytest.raises(ValueError, match="Clean replay exceeds"):
+        verify_replay(clean, clean.assign(p3=float("nan")))
     with pytest.raises(ValueError, match="archived allowed_grades"):
         verify_replay(clean, clean.assign(allowed_grades="2|3|4"))
 

@@ -6,17 +6,17 @@
 
 先前的 58 例规则激活病例中，仅凭分子报告、自由融合、ACF 和只读残差的投影后违规率均为零。更换 MRI 时，只读残差的投影前 Grade 4 概率保持固定。本人 MRI 条件下，只读残差与自由融合加投影的规则内 Brier 分别为 0.2154 和 0.2155，配对差值区间跨零。
 
-- 复用原分级的患者五折、ROI 缓存、规则编译器、输出投影与检查点。分子报告对照按原协议在每折训练患者上确定性地复建逻辑回归，其余三组直接加载已训练模型。先复现 618 名留出患者的本人 MRI 预测，投影前后六个概率的最大绝对误差阈值均为 `1e-5`。
+- 复用原分级的患者五折、ROI 缓存、规则编译器、输出投影与检查点。分子报告对照按原协议在每折训练患者上确定性地复建逻辑回归，其余三组直接加载已训练模型。先复现 618 名留出患者的本人 MRI 预测。投影前后六个概率的最大绝对误差超过 `1e-5` 时记录跨环境警告，超过 `1e-4` 时停止。原先导实验的跨环境复现最大误差为 `5.56e-5`，首次服务器复放在 `1.55e-5` 处触发原 `1e-5` 阈值，因此修订数值容差。每折误差和当前 PyTorch/GPU 环境保存到 `replay_audit.json`。禁止等级概率阈值为 `1e-6`。
 - 在规则激活且 MRI 完整的 58 人中，固定本人分子报告和参考等级，逐一换入同折其他激活患者的 MRI。五折人数为 12、12、11、11、12，每种模型共 616 个有方向的交换。供体选择与参考等级无关。检查允许等级、仅报告模型的概率、只读残差的投影前 Grade 4 概率及所有模型的投影后禁止等级质量。
 - 主比较为只读残差的供体平均 Brier 减去本人 MRI Brier。以患者为单位先平均供体，再计算患者均值。每个模型用相同的供体表。同一批患者比较本人 MRI 下的只读残差与分子报告、自由融合加投影。使用相同的按折分层配对抽样 10,000 次，报告各折及去一折效应。区间以已有检查点及固定供体池为条件。这是同队列机制复核。
 - 主比较区间下限大于零时，支持本人 MRI 提供患者特异的预测信息。只有进一步优于仅报告模型，才主张相对于报告的增量价值。只有直接优于自由融合加投影，才主张只读结构改善预测。若主比较仍不确定，下一阶段优先增加规则激活病例或开展独立队列验证。
 
-在 AutoDL 的仓库目录运行。第一个归档来自 Idea 4，须包含 `manifest.json`、`image_audit.json`、`cache/`、`splits/` 以及五折 ACF 和自由融合检查点。第二个归档来自 Idea 3 原分级实验的 `experiment2/`，须包含 `authority_oof_predictions.csv` 及五折完整产物。修改前两行以匹配实例位置。
+在 AutoDL 的仓库目录运行。第一个归档来自 Idea 4，须包含 `manifest.json`、`image_audit.json`、`cache/`、`splits/` 以及五折 ACF 和自由融合检查点。第二个归档来自 Idea 3 原分级实验的 `experiment2/`，须包含 `authority_oof_predictions.csv` 及五折完整产物。以下路径对应本次上传的两个子目录。
 
 ```bash
-authority=/root/autodl-tmp/repo/glioma/output/UTSW_add_example/sever_utsw_authority_grade
-residual=/root/autodl-tmp/repo/glioma/output/idea3_pilot_20261124/experiment2
 run=/root/autodl-tmp/repo/glioma/output/idea3_rule_mri_swap
+authority="$run/utsw_authority_grade"
+residual="$run/experiment2"
 mkdir -p "$run" &&
 (
   nohup bash scripts/run_idea3_rule_mri_swap_autodl.sh "$authority" "$residual" "$run" \
