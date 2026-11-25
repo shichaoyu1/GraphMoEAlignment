@@ -90,6 +90,8 @@ bash scripts/run_idea3_pareto_autodl.sh analyze --bootstrap 10000
 
 ## 当前实现与完整论文协议
 
+MRI 单折先导完成后，暂缓完整矩阵。新增 [MRI 基础诊断与可选后训练对照](mri_screen_protocol.md)：默认复用 fold0 token，只为其他折训练共同读出器并运行简单选区参考，输出跨折诊断；后训练为显式独立模式，补相同初始化继续 SFT 与总体风险方向对齐的 NFT，不由诊断自动启动。旧训练法默认仍为 legacy，旧结果保留。
+
 成熟初始化的八个分叉任务已在 seed42 的受控环境完成。NFT 相对于 top8 继续监督的 HV 增量为共同最优约 0.01779、传感器约 0.00320。传感器已选 NFT 检查点的最大 oracle 覆盖距离约 0.8657，整条前沿覆盖仍待验证。仅按 HV 选模也可能舍弃覆盖更好的末次检查点，后续同时保留并报告两者。
 
 真实 MRI 可以先进入单折单种子的先导。bash scripts/run_idea3_pareto_mri_pilot_autodl.sh 默认运行 fold0、seed42，包括公共读出器、三种监督策略、dense_nft/moe_nft/moe_pg 的成熟初始化后训练、三个固定偏好 PG 参考和配对分析，共九个 selector 配置。监督策略沿用 top8，最优示范作为独立实验分支保留。默认输出为 output/idea3_pareto_mri_pilot；fold0 测试队列预计为 37 名有表型标签的患者。统计标记为 partial_fold_diagnostic，不能将其区间外推为五折结论。

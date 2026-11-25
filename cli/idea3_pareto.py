@@ -42,6 +42,7 @@ class Configuration:
     epsilon: float = None
     task: str = 'sensors'
     teacher_mode: str = 'top8'
+    nft_objective: str = 'legacy'
 
 
 def fingerprint(path):
@@ -139,7 +140,8 @@ def configuration(output, config):
 
 
 def run(args):
-    config = Configuration(**{key: getattr(args, key) for key in Configuration.__dataclass_fields__})
+    config = Configuration(**{key: getattr(args, key, field.default)
+                              for key, field in Configuration.__dataclass_fields__.items()})
     initial_policy = getattr(args, 'init_policy', None)
     if config.method.endswith('epsilon'):
         config.fixed_weight = .5
@@ -151,6 +153,10 @@ def run(args):
         raise ValueError('Zero warmup requires --init-policy pointing to a supervised checkpoint')
     if config.teacher_mode not in ('top8', 'best'):
         raise ValueError('teacher-mode must be top8 or best')
+    if config.nft_objective not in ('legacy', 'population_stch'):
+        raise ValueError('nft-objective must be legacy or population_stch')
+    if config.nft_objective != 'legacy' and not config.method.endswith('nft'):
+        raise ValueError('population_stch NFT objective requires an NFT method')
     if min(config.batch, config.k, config.proposals, config.validate_every, config.eval_repeats, config.test_repeats) < 1:
         raise ValueError('Batch size, evidence/proposal counts and evaluation budgets must be positive')
     if config.local_steps < 0 or config.lr <= 0 or not 0 <= config.fold < 5:
@@ -161,6 +167,9 @@ def run(args):
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     signature = asdict(config)
+    # Keep legacy configuration fields stable; source changes still require a new run directory.
+    if config.nft_objective == 'legacy':
+        signature.pop('nft_objective')
     if initial_policy is not None:
         signature['initial_policy_hash'] = fingerprint(initial_policy)
     seed_all(config.seed)
@@ -243,6 +252,7 @@ def run(args):
     save_json(output / 'summary.json', {'method': config.method, 'risk_points': points,
                                        'hypervolume': hypervolume(points), 'history': history,
                                        'n_patients': len(test.context), 'sampling': 'expected single-mask loss',
+                                       'nft_objective': config.nft_objective if config.method.endswith('nft') else None,
                                        'implementation_profile': 'v1_fixed_teacher_random_kernel',
                                        'training_seconds_this_invocation': training_seconds,
                                        'width': width, 'experts': experts,
@@ -264,7 +274,8 @@ def main():
         for key, field in Configuration.__dataclass_fields__.items():
             flag = '--' + key.replace('_', '-')
             value = field.default
-            current.add_argument(flag, default=value, type=float if key in ('fixed_weight', 'epsilon') else type(value))
+            options = {'choices': ('legacy', 'population_stch')} if key == 'nft_objective' else {}
+            current.add_argument(flag, default=value, type=float if key in ('fixed_weight', 'epsilon') else type(value), **options)
         current.set_defaults(k=4 if command == 'controlled' else 8)
     current = sub.add_parser('prepare')
     current.add_argument('--prepared', type=Path, required=True)

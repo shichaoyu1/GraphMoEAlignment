@@ -102,11 +102,26 @@ def analyze(source, output, repetitions):
             if method in contrasts:
                 adjusted = max(adjusted, min(1., (len(family) - rank) * contrasts[method]['centered_bootstrap_p']))
                 contrasts[method]['holm_p'] = adjusted
+    nft_contrasts = {}
+    pg_contrasts = {}
+    for family in ('dense', 'moe'):
+        control = family + '_sft'
+        for suffix, destination in (('nft', nft_contrasts), ('pg', pg_contrasts)):
+            method = family + '_' + suffix
+            if method in average and control in average:
+                delta = average[method] - average[control]
+                valid = delta[1:][np.isfinite(delta[1:])]
+                destination[family] = {
+                    'comparison': method + '_minus_' + control,
+                    'estimate': float(delta[0]), 'ci95': np.quantile(valid, [.025, .975]).tolist(),
+                    'centered_bootstrap_p': float((1 + np.sum(np.abs(valid - delta[0]) >= abs(delta[0]))) / (len(valid) + 1)),
+                    'intervals': 'paired patients conditional on fitted models; unadjusted; no multiplicity claim'}
     output.mkdir(parents=True, exist_ok=True)
     curve = pd.DataFrame(curves)
     atomic_csv(curve, output / 'risk_curves.csv')
     atomic_csv(patients, output / 'patient_losses.csv')
     save_json(output / 'summary.json', {'methods': report, 'moe_pg_minus_control': contrasts,
+                                      'nft_minus_sft': nft_contrasts, 'pg_minus_sft': pg_contrasts,
                                       'bootstrap_repetitions': repetitions, 'seeds': list(map(int, seeds)),
                                       'folds': sorted(map(int, patients.fold.unique())),
                                       'status': 'complete_five_fold' if patients.fold.nunique() == 5 else 'partial_fold_diagnostic',

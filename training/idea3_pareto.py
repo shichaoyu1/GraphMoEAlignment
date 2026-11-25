@@ -24,6 +24,21 @@ def scalar_risk(risks, preference, scales, linear=False):
     return weighted.sum(-1) if linear else .05 * torch.logsumexp(weighted / .05, -1)
 
 
+def population_nft_advantage(values, alpha, batch, group):
+    """Shared population-risk direction, with one detached batch-wide scale.
+
+    Alpha is estimated on the independent risk block, as for PG. A single positive
+    normalization preserves the scalar reward ordering across both objectives and
+    all patients; per-objective or per-patient standardization would change it.
+    NFT still optimizes a clipped reconstruction surrogate, not the PG estimator.
+    """
+    grouped = values.reshape(batch, group, -1)
+    baseline = (grouped.sum(1, keepdim=True) - grouped) / (group - 1)
+    advantage = -((grouped - baseline).reshape(len(values), -1) * alpha).sum(-1).detach()
+    scale = advantage.square().mean().sqrt().clamp_min(1e-4)
+    return advantage / scale, scale
+
+
 @torch.no_grad()
 def evaluate(policy, environment, preferences, repeats, steps, noise, k, seed):
     records, points = [], []
@@ -132,6 +147,11 @@ def validation_metrics(policy, environment, config):
 
 
 def optimize(policy, train, validation, config, callback=None, resume=None):
+    nft_objective = getattr(config, 'nft_objective', 'legacy')
+    if nft_objective not in ('legacy', 'population_stch'):
+        raise ValueError('nft_objective must be legacy or population_stch')
+    if nft_objective != 'legacy' and not config.method.endswith('nft'):
+        raise ValueError('population_stch NFT objective requires an NFT method')
     build_demonstrations(train, config.k, config.proposals, config.local_steps)
     reference = deepcopy(policy).requires_grad_(False)
     optimizer = torch.optim.AdamW(policy.parameters(), lr=config.lr, weight_decay=1e-4)
@@ -183,9 +203,17 @@ def optimize(policy, train, validation, config, callback=None, resume=None):
             diagnostics['within_group_reward_std'] = values.reshape(config.batch, config.group, 2).std(
                 1, unbiased=False).mean(0).cpu().tolist()
             if config.method.endswith('nft'):
-                rewards = (-values / train.scales).reshape(config.batch, config.group, 2)
-                advantages = ((rewards - rewards.mean(1, keepdim=True)) /
-                              (rewards.std(1, keepdim=True, unbiased=False) + 1e-4)).reshape(-1, 2)
+                if nft_objective == 'population_stch':
+                    advantages, advantage_scale = population_nft_advantage(
+                        values, alpha, config.batch, config.group)
+                    diagnostics['nft_objective'] = nft_objective
+                    diagnostics['scalar_advantage_scale'] = float(advantage_scale)
+                    diagnostics['scalar_advantage_std'] = float(advantages.std(unbiased=False))
+                    diagnostics['advantage_clip_fraction'] = float((advantages.abs() > 5).float().mean())
+                else:
+                    rewards = (-values / train.scales).reshape(config.batch, config.group, 2)
+                    advantages = ((rewards - rewards.mean(1, keepdim=True)) /
+                                  (rewards.std(1, keepdim=True, unbiased=False) + 1e-4)).reshape(-1, 2)
                 time = torch.rand(len(ids), device=ids.device)
                 noise = torch.randn_like(clean)
                 state = noise * (1 - time[:, None]) + clean * time[:, None]
@@ -201,9 +229,12 @@ def optimize(policy, train, validation, config, callback=None, resume=None):
                 negative_loss = ((negative - clean).square() /
                                  (negative - clean).abs().mean(-1, keepdim=True).detach().clamp_min(1e-5)).mean(-1)
                 reward_weight = .5 + .5 * (advantages / 5).clamp(-1, 1)
-                per_objective = (reward_weight * positive_loss[:, None] +
-                                 (1 - reward_weight) * negative_loss[:, None]) / .1
-                loss = (per_objective * torch.stack([prefs, 1 - prefs], -1)).sum(-1).mean() * 5
+                if nft_objective == 'population_stch':
+                    loss = (reward_weight * positive_loss + (1 - reward_weight) * negative_loss).mean() / .1 * 5
+                else:
+                    per_objective = (reward_weight * positive_loss[:, None] +
+                                     (1 - reward_weight) * negative_loss[:, None]) / .1
+                    loss = (per_objective * torch.stack([prefs, 1 - prefs], -1)).sum(-1).mean() * 5
                 loss = loss + 1e-4 * (prediction - reference_prediction).square().mean()
             else:
                 grouped = values.reshape(config.batch, config.group, 2)
