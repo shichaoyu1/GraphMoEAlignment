@@ -37,14 +37,34 @@ mkdir -p -- "$inputs"
       continue
     fi
     echo "Fetching WAW v3 $file"
-    url="https://zenodo.org/records/22205631/files/$file?download=1"
-    if ! curl -fsSL --retry 4 --retry-delay 3 --continue-at - --output "$file.part" "$url" ||
-       ! printf '%s  %s.part\n' "$checksum" "$file" | md5sum --check --status; then
-      echo "Could not verify resumed download; fetching a fresh copy"
-      curl -fsSL --retry 3 --output "$file.part" "$url"
+    verified=false
+    for url in "https://zenodo.org/api/records/22205631/files/$file/content" \
+               "https://zenodo.org/records/22205631/files/$file?download=1"; do
+      resume=(--continue-at -)
+      if [[ ! -s "$file.part" ]]; then resume=(); fi
+      rc=0
+      http=$(curl -fsSL --retry 3 --retry-delay 3 "${resume[@]}" --output "$file.part" \
+                  --write-out '%{http_code}' "$url") || rc=$?
+      echo "HTTP $http (curl $rc): $url"
+      if [[ $rc == 33 || $rc == 36 || $http == 416 ]]; then
+        # A stale partial file or a server without range support needs a fresh GET.
+        curl -fsSL --retry 3 --output "$file.part" "$url" || continue
+      elif [[ $rc != 0 ]]; then
+        continue
+      fi
+      if printf '%s  %s.part\n' "$checksum" "$file" | md5sum --check --status; then
+        mv -- "$file.part" "$file"
+        verified=true
+        break
+      fi
+      echo "Release checksum mismatch; retrying without the partial bytes" >&2
+      : >"$file.part"
+    done
+    if [[ $verified == false ]]; then
+      printf 'Input download failed; inference has not started. Upload the three original WAW v3 files to %s and rerun:\n%s\n' \
+        "$(pwd -P)" "1_0_clinical_molecular_data.csv  3_1_preop_masks.zip  2_1_preop_scans_coreg.zip" >&2
+      exit 1
     fi
-    printf '%s  %s.part\n' "$checksum" "$file" | md5sum --check
-    mv -- "$file.part" "$file"
   done <<'FILES'
 7dd4f66797b768853898e77de76cda44 1_0_clinical_molecular_data.csv
 cca9e9da6d7cc4a06e0c31bebb86b592 3_1_preop_masks.zip
