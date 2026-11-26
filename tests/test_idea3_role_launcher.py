@@ -9,7 +9,8 @@ import time
 import pytest
 
 
-def test_background_launcher_uses_uploaded_archives_and_separate_run_directory(tmp_path):
+@pytest.mark.parametrize("experiment", ["idea3_role_transition", "idea3_record_value"])
+def test_background_launcher_uses_uploaded_archives_and_separate_run_directory(tmp_path, experiment):
     bash = shutil.which("bash")
     if not bash and os.name == "nt" and shutil.which("git"):
         bash = Path(shutil.which("git")).parents[1] / "bin" / "bash.exe"
@@ -18,11 +19,11 @@ def test_background_launcher_uses_uploaded_archives_and_separate_run_directory(t
     repo = tmp_path / "glioma"
     scripts = repo / "scripts"
     scripts.mkdir(parents=True)
-    launcher = scripts / "run_idea3_role_transition_autodl.sh"
+    launcher = scripts / f"run_{experiment}_autodl.sh"
     shutil.copyfile(Path(__file__).resolve().parents[1] / "scripts" / launcher.name, launcher)
     archive = repo / "output" / "idea3_rule_mri_swap"
     for name in ("utsw_authority_grade/manifest.json", "utsw_authority_grade/image_audit.json",
-                 "experiment2/authority_oof_predictions.csv"):
+                 "experiment2/authority_oof_predictions.csv", "experiment2/fold0/best.pt"):
         path = archive / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.touch()
@@ -38,7 +39,7 @@ def test_background_launcher_uses_uploaded_archives_and_separate_run_directory(t
         proc = subprocess.run([str(bash), launcher.as_posix()], cwd=repo, capture_output=True, text=True, env=env)
         assert proc.returncode == 0, proc.stderr
         assert "PID " in proc.stdout
-    runs = list((repo / "output" / "idea3_role_transition").glob("run_*"))
+    runs = list((repo / "output" / experiment).glob("run_*"))
     assert len(runs) == 2
     for run in runs:
         for _ in range(150):
@@ -48,7 +49,7 @@ def test_background_launcher_uses_uploaded_archives_and_separate_run_directory(t
         assert (run / "run.pid").read_text().strip().isdigit()
         assert "background test" in (run / "run.log").read_text()
         args = json.loads((run / "args.json").read_text())
-        assert args[0] == "glioma.cli.idea3_role_transition"
+        assert args[0] == f"glioma.cli.{experiment}"
         for option, path in (("--authority-source", archive / "utsw_authority_grade"),
                              ("--residual-source", archive / "experiment2"), ("--output", run)):
             assert Path(args[args.index(option) + 1]).resolve() == path.resolve()
