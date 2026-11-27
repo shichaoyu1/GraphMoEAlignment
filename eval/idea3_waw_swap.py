@@ -6,7 +6,7 @@ from glioma.cli.idea3_rule_mri_swap import PROBABILITIES, verify_invariance
 from glioma.eval.idea3_rule_mri_swap import patient_results, summarize, validate_pairs
 
 
-def external_results(frames, ids):
+def external_results(frames, ids, stratum="WAW"):
     validate_pairs(frames, {fold: ids for fold in range(5)})
     scored, individual = patient_results(frames)
     verify_invariance(scored)
@@ -14,8 +14,8 @@ def external_results(frames, ids):
     keys = ["model", "subject_id", "image_subject_id", "label", "reference_grade", "allowed_grades"]
     averaged = frames.groupby(keys, as_index=False)[PROBABILITIES].mean()
     # The external cohort is a single bootstrap stratum, shared by all five models' fits.
-    averaged["fold"] = "WAW"
-    validate_pairs(averaged, {"WAW": ids})
+    averaged["fold"] = stratum
+    validate_pairs(averaged, {stratum: ids})
     ensemble, patients = patient_results(averaged)
     verify_invariance(ensemble)
     report = summarize(patients)

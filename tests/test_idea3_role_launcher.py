@@ -9,7 +9,7 @@ import time
 import pytest
 
 
-@pytest.mark.parametrize("experiment", ["idea3_role_transition", "idea3_record_value"])
+@pytest.mark.parametrize("experiment", ["idea3_role_transition", "idea3_record_value", "idea3_tcga_lgg_swap"])
 def test_background_launcher_uses_uploaded_archives_and_separate_run_directory(tmp_path, experiment):
     bash = shutil.which("bash")
     if not bash and os.name == "nt" and shutil.which("git"):
@@ -27,6 +27,14 @@ def test_background_launcher_uses_uploaded_archives_and_separate_run_directory(t
         path = archive / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.touch()
+    if experiment == "idea3_tcga_lgg_swap":
+        (repo / "output" / "tcga_lgg_13_inputs.zip").write_bytes(b"test input")
+        (archive / "utsw_authority_grade" / "manifest.json").write_text("{}")
+        for fold in range(5):
+            for run in (f"experiment2/fold{fold}", f"utsw_authority_grade/fold{fold}/acf",
+                        f"utsw_authority_grade/fold{fold}/learned_joint"):
+                (archive / run).mkdir(parents=True, exist_ok=True)
+                (archive / run / "best.pt").write_bytes(b"test weights")
     (scripts / "run_idea3_module.py").write_text(
         "import json, pathlib, sys\n"
         "args = sys.argv[1:]\n"
@@ -50,6 +58,8 @@ def test_background_launcher_uses_uploaded_archives_and_separate_run_directory(t
         assert "background test" in (run / "run.log").read_text()
         args = json.loads((run / "args.json").read_text())
         assert args[0] == f"glioma.cli.{experiment}"
+        if experiment == "idea3_tcga_lgg_swap":
+            assert Path(args[args.index("--inputs") + 1]).resolve() == repo / "output" / "tcga_lgg_13_inputs.zip"
         for option, path in (("--authority-source", archive / "utsw_authority_grade"),
                              ("--residual-source", archive / "experiment2"), ("--output", run)):
             assert Path(args[args.index(option) + 1]).resolve() == path.resolve()
